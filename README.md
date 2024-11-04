@@ -1,2 +1,1 @@
-# mwc-rpi5
-baru
+# mwc-rpi

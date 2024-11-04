@@ -1,0 +1,14 @@
+[Unit]
+Description=MarkasWalet Streaming Process
+After=network.target
+
+[Service]
+WorkingDirectory=/usr/local/bin/markaswalet-stream/
+ExecStart=python3 mwc_service.py > log.txt
+ExecStop=pkill -f mwc_service.py
+Restart=always
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
