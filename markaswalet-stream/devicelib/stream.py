@@ -93,9 +93,9 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef'):
         '-c:v', 'libx264',  # video codec
         '-preset', 'ultrafast',
         '-tune', 'zerolatency',
-        '-b:v', '500k',  # Adjust bitrate as needed for better quality
-        '-maxrate', '500k',
-        '-bufsize', '1000k',
+        '-b:v', '250k',  # Adjust bitrate as needed for better quality
+        '-maxrate', '300k',
+        '-bufsize', '600k',
         '-pix_fmt', 'yuv420p', #standard pixel format for compatibility
         '-profile:v', 'baseline', #Baseline for better compatibility with mobile devices
 
