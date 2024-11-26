@@ -95,7 +95,7 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef'):
         '-tune', 'zerolatency',
         '-b:v', '500k',  # Adjust bitrate as needed for better quality
         '-maxrate', '500k',
-        '-bufsize', '100k',
+        '-bufsize', '1000k',
         '-pix_fmt', 'yuv420p', #standard pixel format for compatibility
         '-profile:v', 'baseline', #Baseline for better compatibility with mobile devices
 
