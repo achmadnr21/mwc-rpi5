@@ -125,7 +125,14 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef'):
     flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP)
     # Start ffmpeg subprocess
     ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE)
-    
+    # take picture and save it
+    frame = picam2.capture_array()
+    if frame is None:
+        print('Outer Image Capture Error')
+    frame_bgr = np.asarray(frame[:, :, 0:3], dtype=np.uint8)
+    frame_bgr = cv2.flip(frame_bgr, -1)
+    print('Outer Image Capture Success')
+    write_image(frame_bgr)
     try:
         
         while True:

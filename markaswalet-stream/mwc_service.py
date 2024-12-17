@@ -1,5 +1,6 @@
 from devicelib.device import Device
 from devicelib.stream import stream_process
+from devicelib.stream import write_image as WIMG
 import os
 import time
 
@@ -44,6 +45,7 @@ if __name__ == '__main__':
             strkey = device_get_stream_key()
             print(f'[STREAM_KEY] : {strkey}')
             if strkey is None:
+                print('[OUTER][STREAM_KEY] : Stream Key not granted')
                 continue
             while True:
                 stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey)
