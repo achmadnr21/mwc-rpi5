@@ -11,7 +11,7 @@ device_dataControl = Device()
 
 # perform pwd to check directory
 
-GLOBAL_STREAM_IP = '103.193.179.252'
+GLOBAL_STREAM_IP = '46.250.229.47'
 # procedure to get stream key
 
 def write_key(stream_key):
