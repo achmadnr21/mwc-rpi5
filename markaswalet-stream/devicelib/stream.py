@@ -133,7 +133,7 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef'):
         frame_bgr = np.asarray(frame[:, :, 0:3], dtype=np.uint8)
         frame_bgr = cv2.flip(frame_bgr, -1)
         print('Outer Image Capture Success')
-        write_image(frame_bgr)
+        #write_image(frame_bgr)
     try:
         
         while True:
@@ -149,7 +149,7 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef'):
             # Convert from numpy array to OpenCV image format
             frame_bgr = np.asarray(frame[:, :, 0:3], dtype=np.uint8)
             frame_bgr = cv2.flip(frame_bgr, -1)
-            write_image(frame_bgr)
+            #write_image(frame_bgr)
             
             # yolo
             # new_frame_bgr, count = detector.detect_and_count_birds(frame, confidence=0.65)
