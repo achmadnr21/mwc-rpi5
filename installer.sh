@@ -1,6 +1,6 @@
 #!/bin/bash
 # install python3-opencv
-sudo apt install python3-opencv
+sudo apt install python3-opencv -y
 sleep 2
 # Menyalin direktori ke /usr/local/bin/
 sudo cp -rf markaswalet-stream /usr/local/bin/
