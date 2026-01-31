@@ -44,9 +44,19 @@ class Device:
         characters = string.ascii_letters + string.digits
         password = ''.join(random.choice(characters) for _ in range(length))
         return password
-
     
-        
+    def getDeviceName(self):
+        conn = self.local_database_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT name FROM device_data limit 1
+        ''')
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return row[0]
+        else:
+            return None
     
     def is_check_local_data_exist(self):
         conn = self.local_database_connection()

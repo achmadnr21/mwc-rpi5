@@ -7,22 +7,32 @@ from collections import deque
 import math
 
 class SwiftletCounter:
-    def __init__(self, input_video_path, output_video_path, config_path="config.json"):
+    def __init__(self, input_video_path=None, output_video_path=None, config_path="config.json", streaming_mode=False):
         self.input_path = input_video_path
         self.output_path = output_video_path
+        self.streaming_mode = streaming_mode
         
         # Load configuration
         self.config = self._load_config(config_path)
         
-        # Video capture and properties
-        self.cap = cv2.VideoCapture(input_video_path)
-        self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
-        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # Video capture and properties (only for video file mode)
+        if not streaming_mode and input_video_path:
+            self.cap = cv2.VideoCapture(input_video_path)
+            self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
+            self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        else:
+            self.cap = None
+            self.fps = 15  # Default for streaming
+            self.width = 640  # Default for streaming
+            self.height = 480  # Default for streaming
         
-        # Video writer for output
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.out = cv2.VideoWriter(output_video_path, fourcc, self.fps, (self.width, self.height))
+        # Video writer for output (only for video file mode)
+        if not streaming_mode and output_video_path:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.out = cv2.VideoWriter(output_video_path, fourcc, self.fps, (self.width, self.height))
+        else:
+            self.out = None
         
         # Simple background subtractor
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows=True)
@@ -554,7 +564,15 @@ class SwiftletCounter:
     
     
     def process_video(self, show_preview=True):
-        """Enhanced video processing with temporal consistency"""
+        """Enhanced video processing with temporal consistency - only for video file mode"""
+        if self.streaming_mode:
+            print("Warning: process_video() should not be called in streaming mode")
+            return
+            
+        if not self.cap or not self.out:
+            print("Error: Video capture or writer not initialized")
+            return
+            
         self.frame_count = 0
         start_time = time.time()
         
@@ -700,20 +718,3 @@ class SwiftletCounter:
         with open(stats_path, 'w') as f:
             json.dump(stats, f, indent=2)
         print(f"Statistics saved to: {stats_path}")
-
-def main():
-    # Input and output paths
-    input_video = "rumahburungwalet.mp4"
-    output_video = "rbw_w.mp4"
-    
-    # Check if input video exists
-    if not Path(input_video).exists():
-        print(f"Error: Input video '{input_video}' not found!")
-        return
-    
-    # Create counter and process video
-    counter = SwiftletCounter(input_video, output_video)
-    counter.process_video(show_preview=True)
-
-if __name__ == "__main__":
-    main()

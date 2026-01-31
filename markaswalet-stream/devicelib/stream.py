@@ -9,7 +9,7 @@ import os
 # import devicelib.detector as detector
 
 # Import SwiftletCounter for frame processing
-from markaswalet_stream.devicelib.swiftlet_counter import SwiftletCounter
+from devicelib.swiftlet_counter import SwiftletCounter
 
 # import raspberry pi pins to pull up digital pin for relay
 
@@ -36,18 +36,14 @@ picam2.configure(picam2.create_preview_configuration(main={"format": 'XRGB8888',
 # Initialize SwiftletCounter for streaming (frame-by-frame)
 class StreamingSwiftletCounter(SwiftletCounter):
     def __init__(self, config_path="config.json"):
-        # Dummy paths, not used in streaming mode
-        super().__init__(input_video_path=None, output_video_path=None, config_path=config_path)
-        self.streaming_mode = True
+        # Initialize parent with streaming mode flag
+        super().__init__(input_video_path=None, output_video_path=None, config_path=config_path, streaming_mode=True)
         self.fps = FPS
         self.width = IMSIZE[0]
         self.height = IMSIZE[1]
-        self.out = None  # No video writer
-        self.cap = None  # No video capture
 
     def process_frame(self, frame):
-        # Simulate the main pipeline for a single frame
-        # Preprocess, detect, update trackers, annotate
+        # Process single frame: detect, track, annotate
         fg_mask = self.bg_subtractor.apply(frame)
         mask = self._preprocess_mask(fg_mask)
         detections = self.detect_birds(frame, mask)
