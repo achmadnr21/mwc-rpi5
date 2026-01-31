@@ -7,10 +7,11 @@ from collections import deque
 import math
 
 class SwiftletCounter:
-    def __init__(self, input_video_path=None, output_video_path=None, config_path="config.json", streaming_mode=False):
+    def __init__(self, input_video_path=None, output_video_path=None, config_path="config.json", streaming_mode=False, device_name="RBW Lantai 1"):
         self.input_path = input_video_path
         self.output_path = output_video_path
         self.streaming_mode = streaming_mode
+        self.device_name = device_name
         
         # Load configuration
         self.config = self._load_config(config_path)
@@ -522,7 +523,7 @@ class SwiftletCounter:
         y_position_count = int(frame_height * 0.11)  # 11% from top
 
         # Ensure text fits within frame
-        text_size_title, _ = cv2.getTextSize("RBW Lantai 1", font, text_scale, 2)
+        text_size_title, _ = cv2.getTextSize(self.device_name, font, text_scale, 2)
         text_size_prefix, _ = cv2.getTextSize(count_prefix, font, text_scale, 2)
 
         # Adjust position if text would go outside frame
@@ -530,7 +531,7 @@ class SwiftletCounter:
             x_position = frame_width - text_size_title[0] - 20
 
         # Draw the location text (no outline)
-        cv2.putText(frame, "RBW Lantai 1", (x_position, y_position_title), 
+        cv2.putText(frame, self.device_name, (x_position, y_position_title), 
                 font, text_scale, (255, 255, 255), 2)
 
         # Draw the prefix (no outline)
