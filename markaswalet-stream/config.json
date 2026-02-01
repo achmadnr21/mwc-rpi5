@@ -1,0 +1,16 @@
+{
+  "min_contour_area": 50,
+  "max_contour_area": 500,
+  "confidence_threshold": 0.5,
+  "tracker_max_distance": 70,
+  "tracker_max_lost_frames": 15,
+  "motion_history_frames": 5,
+  "bg_subtractor_type": "MOG2",
+  "bg_learning_rate": 0.0008,
+  "morphology_kernel_size": 3,
+  "preview_scale": 0.6,
+  "save_statistics": true,
+  "enable_static_detection": true,
+  "static_detection_interval": 45,
+  "frame_difference_threshold": 20
+}

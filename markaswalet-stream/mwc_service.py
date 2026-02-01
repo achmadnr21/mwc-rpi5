@@ -43,12 +43,13 @@ if __name__ == '__main__':
     while True:
         try:
             strkey = device_get_stream_key()
+            device_identity_name = device_dataControl.getDeviceName()
             print(f'[STREAM_KEY] : {strkey}')
             if strkey is None:
                 print('[OUTER][STREAM_KEY] : Stream Key not granted')
                 continue
             while True:
-                stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey)
+                stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey, device_name=device_identity_name)
         except Exception as e:
             print(f'Error with pesan\t: {e}')
         time.sleep(5)
