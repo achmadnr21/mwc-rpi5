@@ -91,8 +91,8 @@ class SwiftletCounter:
             confidences = [d['confidence'] for d in all_detections]
             max_conf = max(confidences) if confidences else 0
             avg_conf = np.mean(confidences) if confidences else 0
-            print(f"Frame {self.frame_count}: Motion={len(motion_detections)}, Static={len(static_detections)}, Combined={len(all_detections)}")
-            print(f"  Confidences: max={max_conf:.3f}, avg={avg_conf:.3f}, above_0.5={sum(1 for c in confidences if c > 0.5)}")
+            # print(f"Frame {self.frame_count}: Motion={len(motion_detections)}, Static={len(static_detections)}, Combined={len(all_detections)}")
+            # print(f"  Confidences: max={max_conf:.3f}, avg={avg_conf:.3f}, above_0.5={sum(1 for c in confidences if c > 0.5)}")
         
         return all_detections
     

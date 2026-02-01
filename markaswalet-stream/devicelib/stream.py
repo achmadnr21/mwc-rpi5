@@ -132,6 +132,7 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_na
 
             # Process frame with SwiftletCounter (detect, annotate)
             processed_frame = swiftlet_counter.process_frame(frame_bgr)
+            print(f'[STREAM] Frame {swiftlet_counter.frame_count} processed')
 
             # Add timestamp overlay (optional, can be moved to draw_annotations)
             current_time = datetime.now().strftime("%H:%M:%S")
