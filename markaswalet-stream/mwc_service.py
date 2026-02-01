@@ -1,6 +1,5 @@
 from devicelib.device import Device
 from devicelib.stream import stream_process
-from devicelib.stream import write_image as WIMG
 import os
 import time
 
