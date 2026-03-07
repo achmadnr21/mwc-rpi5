@@ -1,8 +1,8 @@
 {
   "min_contour_area": 40,
   "max_contour_area": 500,
-  "confidence_threshold": 0.5,
-  "display_confidence_threshold": 0.5,
+  "confidence_threshold": 0.50,
+  "display_confidence_threshold": 0.45,
   "tracker_max_distance": 120,
   "tracker_max_lost_frames": 10,
   "tracker_distance_growth": 0.45,
@@ -11,9 +11,8 @@
   "tracker_min_confidence_keep": 0.2,
   "bbox_smooth_alpha": 0.35,
   "use_tracker_prediction": false,
-  "force_mosse_only": true,
   "center_gate_margin_ratio": 0.1,
-  "counting_confidence_threshold": 0.5,
+  "counting_confidence_threshold": 0.52,
   "counting_min_displacement_px": 6,
   "tracker_count_cooldown_seconds": 0.9,
   "global_count_min_interval_seconds": 0.08,
@@ -27,11 +26,36 @@
   "motion_history_frames": 5,
   "bg_subtractor_type": "MOG2",
   "bg_learning_rate": 0.0008,
-  "morphology_kernel_size": 2,
+  "morphology_kernel_size": 3,
+  "morph_close_kernel_size": 7,
   "preview_scale": 0.6,
   "save_statistics": true,
   "motion_only_mode": true,
   "enable_static_detection": false,
   "static_detection_interval": 45,
-  "frame_difference_threshold": 20
+  "frame_difference_threshold": 20,
+
+  "shape_min_solidity": 0.30,
+  "shape_min_compactness": 0.08,
+  "shape_min_extent": 0.18,
+  "shape_aspect_min": 0.25,
+  "shape_aspect_max": 4.5,
+
+  "confidence_weight_area": 0.25,
+  "confidence_weight_aspect": 0.20,
+  "confidence_weight_solidity": 0.20,
+  "confidence_weight_compactness": 0.15,
+  "confidence_weight_darkness": 0.20,
+
+  "nms_iou_threshold": 0.10,
+  "nms_merge_distance": 20,
+
+  "use_kalman_filter": true,
+  "kalman_process_noise_pos": 1.0,
+  "kalman_process_noise_vel": 4.0,
+  "kalman_measurement_noise": 4.0,
+
+  "pending_vote_frames": 2,
+  "pending_vote_window": 4,
+  "pending_max_distance": 25
 }
