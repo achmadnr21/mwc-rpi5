@@ -7,7 +7,16 @@ from collections import deque
 import math
 
 class SwiftletCounter:
-    def __init__(self, input_video_path=None, output_video_path=None, config_path="config.json", streaming_mode=False, device_name="RBW Lantai 1"):
+    def __init__(
+        self,
+        input_video_path=None,
+        output_video_path=None,
+        config_path="config.json",
+        streaming_mode=False,
+        device_name="RBW Lantai 1",
+        center_box_width_ratio=None,
+        center_box_height_ratio=None
+    ):
         self.input_path = input_video_path
         self.output_path = output_video_path
         self.streaming_mode = streaming_mode
@@ -42,14 +51,28 @@ class SwiftletCounter:
         self.trackers = []
         self.bird_id_counter = 0
         self.bird_count = 0
+        self.crossing_count = 0
+        self.cross_in_to_out = 0
+        self.cross_out_to_in = 0
         self.max_birds_per_frame = 20  # Prevent tracker explosion
+        config_center_width = self.config.get('center_box_width_ratio', 0.35)
+        config_center_height = self.config.get('center_box_height_ratio', 0.35)
+        self.center_box_width_ratio = center_box_width_ratio if center_box_width_ratio is not None else config_center_width
+        self.center_box_height_ratio = center_box_height_ratio if center_box_height_ratio is not None else config_center_height
+        self.center_box_width_ratio = max(0.05, min(0.95, self.center_box_width_ratio))
+        self.center_box_height_ratio = max(0.05, min(0.95, self.center_box_height_ratio))
+        self.center_box = self._get_center_box(self.width, self.height)
         
         # Detection parameters - back to working values
         self.min_contour_area = self.config.get('min_contour_area', 50)
         self.max_contour_area = self.config.get('max_contour_area', 500)
         self.confidence_threshold = self.config.get('confidence_threshold', 0.5)
+        self.display_confidence_threshold = self.config.get('display_confidence_threshold', self.confidence_threshold)
+        self.display_confidence_threshold = max(0.0, min(1.0, self.display_confidence_threshold))
         self.tracker_max_distance = self.config.get('tracker_max_distance', 70)
         self.tracker_max_lost_frames = self.config.get('tracker_max_lost_frames', 15)
+        self.bbox_smooth_alpha = self.config.get('bbox_smooth_alpha', 0.65)
+        self.max_bbox_size_change = self.config.get('max_bbox_size_change', 2.2)
         
         # Motion history for temporal consistency
         self.motion_history_frames = self.config.get('motion_history_frames', 5)
@@ -399,45 +422,183 @@ class SwiftletCounter:
         )
         
         return max(0.1, confidence)  # Minimum confidence to avoid zero
+
+    def _get_center_box(self, frame_width, frame_height):
+        """Create center box based on configurable ratios."""
+        box_w = int(frame_width * self.center_box_width_ratio)
+        box_h = int(frame_height * self.center_box_height_ratio)
+        x1 = max(0, (frame_width - box_w) // 2)
+        y1 = max(0, (frame_height - box_h) // 2)
+        x2 = min(frame_width - 1, x1 + box_w)
+        y2 = min(frame_height - 1, y1 + box_h)
+        return (x1, y1, x2, y2)
+
+    def _is_inside_center_box(self, point):
+        """Check whether point lies in the center box."""
+        x, y = point
+        x1, y1, x2, y2 = self.center_box
+        return x1 <= x <= x2 and y1 <= y <= y2
+
+    def _update_crossing_count(self, tracker, bbox):
+        """Update counter when tracker crosses center box boundary."""
+        x, y, w, h = bbox
+        center = (x + w // 2, y + h // 2)
+        inside_now = self._is_inside_center_box(center)
+        inside_before = tracker.get('inside_center_box')
+
+        if inside_before is None:
+            tracker['inside_center_box'] = inside_now
+            return
+
+        if inside_before != inside_now:
+            if inside_before and not inside_now:
+                self.crossing_count += 1
+                self.cross_in_to_out += 1
+            elif (not inside_before) and inside_now:
+                self.crossing_count = max(0, self.crossing_count - 1)
+                self.cross_out_to_in += 1
+        tracker['inside_center_box'] = inside_now
+
+    def _smooth_bbox(self, prev_bbox, new_bbox):
+        """Apply EMA smoothing to bbox to reduce jitter."""
+        px, py, pw, ph = prev_bbox
+        nx, ny, nw, nh = new_bbox
+        alpha = self.bbox_smooth_alpha
+
+        sx = int(alpha * px + (1 - alpha) * nx)
+        sy = int(alpha * py + (1 - alpha) * ny)
+        sw = int(alpha * pw + (1 - alpha) * nw)
+        sh = int(alpha * ph + (1 - alpha) * nh)
+
+        sw = max(1, sw)
+        sh = max(1, sh)
+        return (sx, sy, sw, sh)
+
+    def _is_reasonable_bbox_transition(self, prev_bbox, new_bbox):
+        """Reject abrupt bbox jumps/scale changes that usually cause wild boxes."""
+        px, py, pw, ph = prev_bbox
+        nx, ny, nw, nh = new_bbox
+
+        prev_center = (px + pw / 2.0, py + ph / 2.0)
+        new_center = (nx + nw / 2.0, ny + nh / 2.0)
+        center_distance = np.sqrt(
+            (prev_center[0] - new_center[0]) ** 2 +
+            (prev_center[1] - new_center[1]) ** 2
+        )
+        if center_distance > (self.tracker_max_distance * 1.25):
+            return False
+
+        width_ratio = nw / max(1.0, float(pw))
+        height_ratio = nh / max(1.0, float(ph))
+        max_change = self.max_bbox_size_change
+        min_change = 1.0 / max_change
+        if not (min_change <= width_ratio <= max_change):
+            return False
+        if not (min_change <= height_ratio <= max_change):
+            return False
+
+        return True
+
+    def _create_tracker(self):
+        """Create tracker with compatibility fallback across OpenCV builds."""
+        factories = []
+        legacy = getattr(cv2, 'legacy', None)
+        if legacy is not None:
+            factories.extend([
+                getattr(legacy, 'TrackerMOSSE_create', None),
+                getattr(legacy, 'TrackerKCF_create', None),
+                getattr(legacy, 'TrackerCSRT_create', None),
+            ])
+
+        factories.extend([
+            getattr(cv2, 'TrackerMOSSE_create', None),
+            getattr(cv2, 'TrackerKCF_create', None),
+            getattr(cv2, 'TrackerCSRT_create', None),
+            getattr(cv2, 'TrackerMIL_create', None),
+        ])
+
+        for factory in factories:
+            if callable(factory):
+                try:
+                    return factory()
+                except Exception:
+                    continue
+        return None
     
     def update_trackers(self, frame, detections):
         """Simplified tracker management - like original but working"""
+        self.center_box = self._get_center_box(frame.shape[1], frame.shape[0])
         updated_trackers = []
         used_detections = []
         
-        # Update existing trackers
+        # Update existing trackers (primary: detection matching by centroid distance)
         for tracker in self.trackers:
-            success, box = tracker['tracker'].update(frame)
-            
+            prev_x, prev_y, prev_w, prev_h = tracker['bbox']
+            prev_center = (prev_x + prev_w // 2, prev_y + prev_h // 2)
+
+            best_match = None
+            best_distance = float('inf')
+
+            for i, detection in enumerate(detections):
+                if i in used_detections:
+                    continue
+                det_center = detection['centroid']
+                distance = np.sqrt(
+                    (prev_center[0] - det_center[0]) ** 2 +
+                    (prev_center[1] - det_center[1]) ** 2
+                )
+                if distance < best_distance and distance < self.tracker_max_distance:
+                    best_distance = distance
+                    best_match = i
+
+            if best_match is not None:
+                detection = detections[best_match]
+                used_detections.append(best_match)
+                candidate_bbox = detection['bbox']
+                if self._is_reasonable_bbox_transition(tracker['bbox'], candidate_bbox):
+                    tracker['bbox'] = self._smooth_bbox(tracker['bbox'], candidate_bbox)
+                else:
+                    tracker['lost_frames'] = tracker.get('lost_frames', 0) + 1
+                    tracker['confidence'] *= 0.95
+                    if (
+                        tracker['confidence'] > 0.3 and
+                        tracker.get('lost_frames', 0) <= self.tracker_max_lost_frames
+                    ):
+                        updated_trackers.append(tracker)
+                    continue
+                tracker['confidence'] = detection['confidence']
+                tracker['detection_type'] = detection.get('type', tracker.get('detection_type', 'motion'))
+                tracker['lost_frames'] = 0
+                self._update_crossing_count(tracker, tracker['bbox'])
+                updated_trackers.append(tracker)
+                continue
+
+            # Fallback: use OpenCV tracker prediction when no detection matched
+            tracker_obj = tracker.get('tracker')
+            success = False
+            if tracker_obj is not None:
+                try:
+                    success, box = tracker_obj.update(frame)
+                except Exception:
+                    success = False
+
             if success:
                 x, y, w, h = [int(v) for v in box]
-                center = (x + w//2, y + h//2)
-                
-                # Find matching detection
-                best_match = None
-                best_distance = float('inf')
-                
-                for i, detection in enumerate(detections):
-                    if i not in used_detections:
-                        det_center = detection['centroid']
-                        distance = np.sqrt((center[0] - det_center[0])**2 + 
-                                         (center[1] - det_center[1])**2)
-                        
-                        if distance < best_distance and distance < 50:
-                            best_distance = distance
-                            best_match = i
-                
-                if best_match is not None:
-                    used_detections.append(best_match)
-                    detection = detections[best_match]
-                    tracker['bbox'] = detection['bbox']
-                    tracker['confidence'] = detection['confidence']
-                else:
-                    tracker['bbox'] = (x, y, w, h)
-                    tracker['confidence'] *= 0.95  # Decay confidence
-                
-                if tracker['confidence'] > 0.4:  # Keep tracker if confidence is high enough
-                    updated_trackers.append(tracker)
+                candidate_bbox = (x, y, w, h)
+                if self._is_reasonable_bbox_transition(tracker['bbox'], candidate_bbox):
+                    tracker['bbox'] = self._smooth_bbox(tracker['bbox'], candidate_bbox)
+                tracker['confidence'] *= 0.95
+                tracker['lost_frames'] = tracker.get('lost_frames', 0) + 1
+                self._update_crossing_count(tracker, tracker['bbox'])
+            else:
+                tracker['lost_frames'] = tracker.get('lost_frames', 0) + 1
+                tracker['confidence'] *= 0.9
+
+            if (
+                tracker['confidence'] > 0.3 and
+                tracker.get('lost_frames', 0) <= self.tracker_max_lost_frames
+            ):
+                updated_trackers.append(tracker)
         
         # Create new trackers for unmatched detections
         new_trackers_created = 0
@@ -449,9 +610,13 @@ class SwiftletCounter:
                 
                 # Validate bbox
                 if w > 0 and h > 0 and x >= 0 and y >= 0 and x + w <= self.width and y + h <= self.height:
-                    # Try MOSSE tracker (faster and more reliable)
-                    tracker = cv2.legacy.TrackerMOSSE_create()
-                    success = tracker.init(frame, bbox)
+                    tracker = self._create_tracker()
+                    success = True
+                    if tracker is not None:
+                        try:
+                            success = tracker.init(frame, bbox)
+                        except Exception:
+                            success = False
                     
                     if success:
                         self.bird_id_counter += 1
@@ -462,7 +627,9 @@ class SwiftletCounter:
                             'id': self.bird_id_counter,
                             'bbox': bbox,
                             'confidence': detection['confidence'],
-                            'detection_type': detection.get('type', 'motion')
+                            'detection_type': detection.get('type', 'motion'),
+                            'lost_frames': 0,
+                            'inside_center_box': self._is_inside_center_box((x + w // 2, y + h // 2))
                         })
                     else:
                         print(f"Failed to initialize MOSSE tracker for detection {i}")
@@ -477,10 +644,27 @@ class SwiftletCounter:
     
     def draw_annotations(self, frame):
         """Draw bounding boxes and labels on the frame"""
+        frame_height, frame_width = frame.shape[:2]
+        self.center_box = self._get_center_box(frame_width, frame_height)
+        x1, y1, x2, y2 = self.center_box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
+        cv2.putText(
+            frame,
+            "Center Zone",
+            (x1, max(20, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            1
+        )
+
         for tracker in self.trackers:
             x, y, w, h = tracker['bbox']
             confidence = tracker['confidence']
             bird_id = tracker['id']
+
+            if confidence < self.display_confidence_threshold:
+                continue
             
             # Draw bounding box with different colors for motion vs static
             detection_type = tracker.get('detection_type', 'motion')
@@ -494,7 +678,7 @@ class SwiftletCounter:
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             
             # Draw label with detection type
-            label = f"Swiftlet ({detection_type}): {confidence:.2f}"
+            label = f"Swiftlet: {bird_id} {confidence:.2f}"
             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             label_y = y - 10 if y - 10 > 10 else y + h + 20
             
@@ -503,15 +687,12 @@ class SwiftletCounter:
             cv2.putText(frame, label, (x + 2, label_y), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
-        # Get frame dimensions for responsive positioning
-        frame_height, frame_width = frame.shape[:2]
-
         # Draw total count
-        count_prefix = "Total Burung Walet: "
-        count_number = str(self.bird_count)
+        count_prefix = "Counter Burung Walet: "
+        count_number = str(self.crossing_count)
 
-        # Use elegant font
-        font = cv2.FONT_HERSHEY_DUPLEX
+        # Use slim font style consistent with debug text
+        font = cv2.FONT_HERSHEY_SIMPLEX
 
         # Calculate responsive text scale based on frame width
         base_width = 1920  # Reference width for scaling
@@ -523,8 +704,8 @@ class SwiftletCounter:
         y_position_count = int(frame_height * 0.11)  # 11% from top
 
         # Ensure text fits within frame
-        text_size_title, _ = cv2.getTextSize(self.device_name, font, text_scale, 2)
-        text_size_prefix, _ = cv2.getTextSize(count_prefix, font, text_scale, 2)
+        text_size_title, _ = cv2.getTextSize(self.device_name, font, text_scale, 1)
+        text_size_prefix, _ = cv2.getTextSize(count_prefix, font, text_scale, 1)
 
         # Adjust position if text would go outside frame
         if x_position + text_size_title[0] > frame_width - 20:
@@ -532,34 +713,28 @@ class SwiftletCounter:
 
         # Draw the location text (no outline)
         cv2.putText(frame, self.device_name, (x_position, y_position_title), 
-                font, text_scale, (255, 255, 255), 2)
+            font, text_scale, (255, 255, 255), 1)
 
         # Draw the prefix (no outline)
         cv2.putText(frame, count_prefix, (x_position, y_position_count), 
-                font, text_scale, (255, 255, 255), 2)
+            font, text_scale, (255, 255, 255), 1)
 
         # Calculate the position for the count number
         number_x = x_position + text_size_prefix[0]
 
         # Ensure number fits within frame
-        text_size_number, _ = cv2.getTextSize(count_number, font, text_scale, 2)
+        text_size_number, _ = cv2.getTextSize(count_number, font, text_scale, 1)
         if number_x + text_size_number[0] > frame_width - 20:
             number_x = x_position
             y_position_count += int(text_size_prefix[1] * 1.5)  # Move to next line
 
-        # # Draw ONLY the count number with white outline
-        # # First draw the white outline
-        # for dx in [-2, -1, 0, 1, 2]:
-        #     for dy in [-2, -1, 0, 1, 2]:
-        #         if dx != 0 or dy != 0:
-        #             cv2.putText(frame, count_number, (number_x + dx, y_position_count + dy), 
-        #                     font, text_scale, (255, 255, 255), 3)
-
+        
         text_scale_number = 1.8 * (frame_width / base_width)  # Responsive scaling
 
         # Then draw the main count number in success green on top
         cv2.putText(frame, count_number, (number_x, y_position_count), 
-                font, text_scale_number, (50, 255, 50), 2)
+            font, text_scale_number, (50, 255, 50), 1)
+
 
         return frame
     
@@ -651,6 +826,10 @@ class SwiftletCounter:
         # Save statistics if requested
         if self.config.get('save_statistics', False):
             self._save_statistics()
+    def set_device_name(self, name):
+        """Set the device name for display and statistics"""
+        self.device_name = name
+        print(f"Device name set to: {self.device_name}")
     
     def _preprocess_mask(self, mask):
         """Swiftlet-optimized mask preprocessing"""
