@@ -54,7 +54,6 @@ class StreamingSwiftletCounter(SwiftletCounter):
         fg_mask = self.bg_subtractor.apply(frame)
         mask = self._preprocess_mask(fg_mask)
         detections = self.detect_birds(frame, mask)
-        detections = self._apply_temporal_consistency(detections)
         self.update_trackers(frame, detections)
         annotated = self.draw_annotations(frame)
         self.frame_count += 1
