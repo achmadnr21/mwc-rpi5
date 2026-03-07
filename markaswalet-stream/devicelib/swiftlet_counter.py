@@ -839,7 +839,7 @@ class SwiftletCounter:
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             
             # Draw label with detection type
-            label = f"Swiftlet: {bird_id} {confidence:.2f}"
+            label = f"Swiftlet: {bird_id%100} {confidence:.2f}"
             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             label_y = y - 10 if y - 10 > 10 else y + h + 20
             
