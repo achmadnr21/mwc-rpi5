@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import time
 import json
+import os
 from pathlib import Path
 from collections import deque
 import math
@@ -15,7 +16,8 @@ class SwiftletCounter:
         streaming_mode=False,
         device_name="RBW Lantai 1",
         center_box_width_ratio=None,
-        center_box_height_ratio=None
+        center_box_height_ratio=None,
+        yolo_model_path=None
     ):
         self.input_path = input_video_path
         self.output_path = output_video_path
@@ -44,7 +46,18 @@ class SwiftletCounter:
         else:
             self.out = None
         
-        # Simple background subtractor
+        # YOLO ONNX detector (optional — falls back to classical CV if not provided)
+        self._yolo_net = None
+        self._yolo_input_size = 320
+        self._yolo_conf_threshold = self.config.get('yolo_conf_threshold', 0.40)
+        self._yolo_nms_threshold  = self.config.get('yolo_nms_threshold', 0.45)
+        if yolo_model_path and os.path.isfile(yolo_model_path):
+            self._yolo_net = cv2.dnn.readNetFromONNX(yolo_model_path)
+            print(f'[YOLO] Loaded ONNX model: {yolo_model_path}')
+        else:
+            print('[YOLO] No ONNX model — using classical CV detection')
+
+        # Background subtractor
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows=True)
         
         # Tracking parameters
@@ -138,8 +151,55 @@ class SwiftletCounter:
         self._fps_times = deque(maxlen=30)
         
     def detect_birds(self, frame, mask):
-        """Motion-based bird detection."""
+        """Bird detection — uses YOLO ONNX when available, classical CV otherwise."""
+        if self._yolo_net is not None:
+            return self._detect_yolo(frame)
         return self._detect_motion_birds(frame, mask)
+
+    def _detect_yolo(self, frame):
+        """YOLOv8n ONNX inference via cv2.dnn.
+
+        Input: BGR frame at any resolution — resized internally to 320×320.
+        Output: same detection dict format as _detect_motion_birds so the
+        tracker pipeline is completely unchanged.
+        """
+        h, w = frame.shape[:2]
+        sz = self._yolo_input_size
+        blob = cv2.dnn.blobFromImage(frame, 1 / 255.0, (sz, sz), swapRB=True, crop=False)
+        self._yolo_net.setInput(blob)
+        raw = self._yolo_net.forward()          # shape: (1, 5, num_anchors)
+
+        # YOLOv8 output layout: [batch, (cx,cy,w,h,conf*cls...), anchors]
+        out = raw[0]                            # (5, num_anchors)
+        if out.shape[0] == 5:                   # (5, N) → transpose to (N, 5)
+            out = out.T
+
+        boxes, scores = [], []
+        sx, sy = w / sz, h / sz
+        for row in out:
+            conf = float(row[4])
+            if conf < self._yolo_conf_threshold:
+                continue
+            cx, cy, bw, bh = row[0] * sx, row[1] * sy, row[2] * sx, row[3] * sy
+            x1 = int(cx - bw / 2)
+            y1 = int(cy - bh / 2)
+            boxes.append([x1, y1, int(bw), int(bh)])
+            scores.append(conf)
+
+        if not boxes:
+            return []
+
+        indices = cv2.dnn.NMSBoxes(boxes, scores, self._yolo_conf_threshold, self._yolo_nms_threshold)
+        detections = []
+        for i in (indices.flatten() if len(indices) else []):
+            x, y, bw, bh = boxes[i]
+            detections.append({
+                'bbox': (x, y, bw, bh),
+                'confidence': scores[i],
+                'centroid': (x + bw // 2, y + bh // 2),
+                'type': 'yolo',
+            })
+        return detections
     
     def _detect_motion_birds(self, frame, mask):
         """Shape-aware motion detection with 5-feature confidence scoring.
@@ -191,22 +251,25 @@ class SwiftletCounter:
         Darkness uses a clean relative ratio (frame_mean - roi_mean) / frame_mean
         which is stable in any room brightness, unlike the old saturating formula.
         """
-        # 1. Area score — optimal indoor swiftlet range 80-250 px²
-        if 80 <= area <= 250:
+        # 1. Area score — calibrated from 3,766 real swiftlet annotations
+        #    IQR (640×480 scaled): ~1000–3000 px²;  p95: ~8000 px²
+        if 1000 <= area <= 3000:
             area_score = 1.0
-        elif area < 80:
-            area_score = 0.7 + 0.3 * (area - self.min_contour_area) / max(1, 80 - self.min_contour_area)
+        elif area < 1000:
+            area_score = 0.7 + 0.3 * (area - self.min_contour_area) / max(1, 1000 - self.min_contour_area)
         else:
-            area_score = max(0.4, 1.0 - 0.6 * (area - 250) / max(1, self.max_contour_area - 250))
+            area_score = max(0.4, 1.0 - 0.6 * (area - 3000) / max(1, self.max_contour_area - 3000))
 
-        # 2. Aspect ratio score — wings-spread swiftlet: 1.2–3.0 ideal
+        # 2. Aspect ratio score — calibrated from real data
+        #    Median AR = 0.85 (nearly square), IQR = 0.72–1.08, p95 = 1.70
+        #    Birds are NOT wide-winged crescents at this camera angle/distance
         ar = w / h if h > 0 else 1.0
-        if 1.2 <= ar <= 3.0:
+        if 0.7 <= ar <= 1.1:
             ar_score = 1.0
-        elif 0.5 <= ar < 1.2:
+        elif 0.5 <= ar < 0.7 or 1.1 < ar <= 1.7:
             ar_score = 0.7
-        elif 3.0 < ar <= self.shape_aspect_max:
-            ar_score = 0.55
+        elif 1.7 < ar <= self.shape_aspect_max:
+            ar_score = 0.5
         else:
             ar_score = 0.3
 

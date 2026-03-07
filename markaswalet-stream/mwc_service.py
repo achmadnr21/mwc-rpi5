@@ -11,6 +11,11 @@ device_dataControl = Device()
 # perform pwd to check directory
 
 GLOBAL_STREAM_IP = '46.250.229.47'
+
+# Set this to a real stream key to bypass the API (for local testing when API is down).
+# Leave as None to use the normal API registration flow.
+LOCAL_TEST_STREAM_KEY = '3RLZ6ZGQpMZ3yxGz'
+
 # procedure to get stream key
 
 def write_key(stream_key):
@@ -41,14 +46,19 @@ def device_get_stream_key():
 if __name__ == '__main__':
     while True:
         try:
-            strkey = device_get_stream_key()
-            device_identity_name = device_dataControl.getDeviceName()
+            if LOCAL_TEST_STREAM_KEY:
+                strkey = LOCAL_TEST_STREAM_KEY
+                device_identity_name = device_dataControl.getDeviceName() or 'Local Test Device'
+                print(f'[STREAM_KEY] : Using local test key: {strkey}')
+            else:
+                strkey = device_get_stream_key()
+                device_identity_name = device_dataControl.getDeviceName()
             print(f'[STREAM_KEY] : {strkey}')
             if strkey is None:
                 print('[OUTER][STREAM_KEY] : Stream Key not granted')
                 continue
             while True:
-                stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey, device_name=device_identity_name, use_test_video=True)
+                stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey, device_name=device_identity_name, use_test_video=True, test_video_path='/Users/raulilmarajasa/Desktop/Personal/Startup/Techiro/MarkasWalet/IoT Counter Burung Walet/Computer Vision/MarkasWalet-Swiftlets-Detection/swiftlet_counter/rumahburungwalet.mp4')
         except Exception as e:
             print(f'Error with pesan\t: {e}')
         time.sleep(5)

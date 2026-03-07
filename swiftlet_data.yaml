@@ -1,0 +1,9 @@
+names:
+- swiftlets
+nc: 1
+test: /Users/raulilmarajasa/Desktop/Personal/Startup/Techiro/MarkasWalet/IoT Counter
+  Burung Walet/MarkasWalet Counting.v2i.yolo26/test/images
+train: /Users/raulilmarajasa/Desktop/Personal/Startup/Techiro/MarkasWalet/IoT Counter
+  Burung Walet/MarkasWalet Counting.v2i.yolo26/train/images
+val: /Users/raulilmarajasa/Desktop/Personal/Startup/Techiro/MarkasWalet/IoT Counter
+  Burung Walet/MarkasWalet Counting.v2i.yolo26/valid/images

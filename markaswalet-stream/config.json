@@ -1,6 +1,6 @@
 {
-  "min_contour_area": 40,
-  "max_contour_area": 500,
+  "min_contour_area": 200,
+  "max_contour_area": 10000,
   "confidence_threshold": 0.50,
   "display_confidence_threshold": 0.45,
   "tracker_max_distance": 120,
@@ -38,8 +38,8 @@
   "shape_min_solidity": 0.30,
   "shape_min_compactness": 0.08,
   "shape_min_extent": 0.18,
-  "shape_aspect_min": 0.25,
-  "shape_aspect_max": 4.5,
+  "shape_aspect_min": 0.35,
+  "shape_aspect_max": 2.5,
 
   "confidence_weight_area": 0.25,
   "confidence_weight_aspect": 0.20,

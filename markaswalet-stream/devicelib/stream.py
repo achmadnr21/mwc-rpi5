@@ -42,9 +42,15 @@ VIDEO_BUFSIZE = '640k'
 
 # Initialize SwiftletCounter for streaming (frame-by-frame)
 class StreamingSwiftletCounter(SwiftletCounter):
-    def __init__(self, config_path="config.json", device_name="RBW Lantai 1"):
-        # Initialize parent with streaming mode flag
-        super().__init__(input_video_path=None, output_video_path=None, config_path=config_path, streaming_mode=True, device_name=device_name)
+    def __init__(self, config_path="config.json", device_name="RBW Lantai 1", yolo_model_path=None):
+        super().__init__(
+            input_video_path=None,
+            output_video_path=None,
+            config_path=config_path,
+            streaming_mode=True,
+            device_name=device_name,
+            yolo_model_path=yolo_model_path,
+        )
         self.fps = FPS
         self.width = IMSIZE[0]
         self.height = IMSIZE[1]
@@ -181,8 +187,13 @@ def stream_process(
     # Start ffmpeg subprocess
     ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE, bufsize=0)
     # take picture and save it
+    # Auto-detect ONNX model in same directory as this file
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _onnx_path = os.path.join(os.path.dirname(_here), 'swiftlet_yolov8n.onnx')
+    yolo_path = _onnx_path if os.path.isfile(_onnx_path) else None
+
     # Initialize SwiftletCounter for streaming
-    swiftlet_counter = StreamingSwiftletCounter(device_name=device_name)
+    swiftlet_counter = StreamingSwiftletCounter(device_name=device_name, yolo_model_path=yolo_path)
     ret, frame_bgr = cap.read()
     if not ret or frame_bgr is None:
         print('Outer Image Capture Error')
