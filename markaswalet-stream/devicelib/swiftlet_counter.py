@@ -895,9 +895,24 @@ class SwiftletCounter:
         text_scale_number = 1.8 * (frame_width / base_width)  # Responsive scaling
 
         # Then draw the main count number in success green on top
-        cv2.putText(frame, count_number, (number_x, y_position_count), 
+        cv2.putText(frame, count_number, (number_x, y_position_count),
             font, text_scale_number, (50, 255, 50), counter_number_thickness)
 
+        # Draw Live Counter (per-frame bbox count: inside vs outside center zone)
+        visible_trackers = [t for t in self.trackers if t.get('confidence', 0) >= self.display_confidence_threshold]
+        live_inside = sum(1 for t in visible_trackers if t.get('inside_center_box', False))
+        live_outside = len(visible_trackers) - live_inside
+
+        y_position_live_title = int(frame_height * 0.17)
+        y_position_live_inside = int(frame_height * 0.22)
+        y_position_live_outside = int(frame_height * 0.27)
+
+        cv2.putText(frame, "Live Counter", (x_position, y_position_live_title),
+            font, text_scale, (255, 255, 0), counter_text_thickness)
+        cv2.putText(frame, f"Dalam: {live_inside}", (x_position, y_position_live_inside),
+            font, text_scale, (255, 255, 255), counter_text_thickness)
+        cv2.putText(frame, f"Luar:  {live_outside}", (x_position, y_position_live_outside),
+            font, text_scale, (255, 255, 255), counter_text_thickness)
 
         return frame
     
