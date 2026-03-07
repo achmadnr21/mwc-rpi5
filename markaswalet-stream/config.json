@@ -1,7 +1,7 @@
 {
   "min_contour_area": 50,
   "max_contour_area": 500,
-  "confidence_threshold": 0.5,
+  "confidence_threshold": 0.6,
   "tracker_max_distance": 70,
   "tracker_max_lost_frames": 15,
   "motion_history_frames": 5,

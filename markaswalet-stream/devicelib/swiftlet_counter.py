@@ -648,15 +648,6 @@ class SwiftletCounter:
         self.center_box = self._get_center_box(frame_width, frame_height)
         x1, y1, x2, y2 = self.center_box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
-        cv2.putText(
-            frame,
-            "Center Zone",
-            (x1, max(20, y1 - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            1
-        )
 
         for tracker in self.trackers:
             x, y, w, h = tracker['bbox']
