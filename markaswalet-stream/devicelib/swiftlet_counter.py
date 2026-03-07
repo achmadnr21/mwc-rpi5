@@ -48,12 +48,15 @@ class SwiftletCounter:
         
         # YOLO ONNX detector (optional — falls back to classical CV if not provided)
         self._yolo_net = None
-        self._yolo_input_size = 320
+        self._yolo_input_size     = int(self.config.get('yolo_input_size', 320))
         self._yolo_conf_threshold = self.config.get('yolo_conf_threshold', 0.40)
         self._yolo_nms_threshold  = self.config.get('yolo_nms_threshold', 0.45)
-        if yolo_model_path and os.path.isfile(yolo_model_path):
+        use_yolo = self.config.get('use_yolo', True)
+        if use_yolo and yolo_model_path and os.path.isfile(yolo_model_path):
             self._yolo_net = cv2.dnn.readNetFromONNX(yolo_model_path)
             print(f'[YOLO] Loaded ONNX model: {yolo_model_path}')
+        elif not use_yolo:
+            print('[YOLO] use_yolo=False in config — using classical CV detection')
         else:
             print('[YOLO] No ONNX model — using classical CV detection')
 
@@ -143,6 +146,15 @@ class SwiftletCounter:
         self.pending_max_distance = self.config.get('pending_max_distance', 25)
         self._pending_pool = []
 
+        # Color preprocessing parameters
+        self.color_brightness = float(self.config.get('color_brightness', 0))
+        self.color_contrast   = float(self.config.get('color_contrast', 0))
+        self.color_saturation = float(self.config.get('color_saturation', 0))
+        self.color_hue        = float(self.config.get('color_hue', 0))
+        self.color_gamma      = float(self.config.get('color_gamma', 1.0))
+        self.color_use_clahe  = bool(self.config.get('color_use_clahe', False))
+        self.color_clahe_clip = float(self.config.get('color_clahe_clip', 2.0))
+
         # Statistics
         self.frame_count = 0
         self.detection_history = deque(maxlen=100)
@@ -155,6 +167,112 @@ class SwiftletCounter:
         if self._yolo_net is not None:
             return self._detect_yolo(frame)
         return self._detect_motion_birds(frame, mask)
+
+    # ── Color preprocessing ─────────────────────────────────────────────────
+
+    def _color_preprocessing_active(self) -> bool:
+        return (self.color_brightness != 0 or self.color_contrast != 0 or
+                self.color_saturation != 0 or self.color_hue != 0 or
+                self.color_gamma != 1.0 or self.color_use_clahe)
+
+    def _apply_color_preprocessing(self, frame):
+        """Return a color-corrected copy of frame based on current config params."""
+        # Brightness + Contrast via convertScaleAbs: alpha=(1+c/100), beta=b
+        b, c = self.color_brightness, self.color_contrast
+        if b != 0 or c != 0:
+            alpha = max(0.0, 1.0 + c / 100.0)
+            frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=b)
+
+        # Saturation + Hue shift via HSV
+        if self.color_saturation != 0 or self.color_hue != 0:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+            if self.color_hue != 0:
+                hsv[:, :, 0] = (hsv[:, :, 0] + self.color_hue / 2.0) % 180
+            if self.color_saturation != 0:
+                hsv[:, :, 1] = np.clip(hsv[:, :, 1] * (1.0 + self.color_saturation / 100.0), 0, 255)
+            frame = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+        # Gamma correction via LUT
+        if self.color_gamma != 1.0:
+            inv_gamma = 1.0 / max(0.01, self.color_gamma)
+            lut = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)], dtype=np.uint8)
+            frame = cv2.LUT(frame, lut)
+
+        # CLAHE (adaptive histogram equalisation on L channel)
+        if self.color_use_clahe:
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+            clahe = cv2.createCLAHE(clipLimit=self.color_clahe_clip, tileGridSize=(8, 8))
+            lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+            frame = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+        return frame
+
+    # ── Hot-reload ───────────────────────────────────────────────────────────
+
+    def reload_config_from_dict(self, config_dict: dict):
+        """Re-apply all tunable params from a dict (e.g. fetched from API).
+        Counters and trackers are preserved — no data is lost."""
+        self.config = config_dict
+        self._yolo_conf_threshold = self.config.get('yolo_conf_threshold', 0.40)
+        self._yolo_nms_threshold  = self.config.get('yolo_nms_threshold', 0.45)
+        self._yolo_input_size     = int(self.config.get('yolo_input_size', 320))
+        self.color_brightness     = float(self.config.get('color_brightness', 0))
+        self.color_contrast       = float(self.config.get('color_contrast', 0))
+        self.color_saturation     = float(self.config.get('color_saturation', 0))
+        self.color_hue            = float(self.config.get('color_hue', 0))
+        self.color_gamma          = float(self.config.get('color_gamma', 1.0))
+        self.color_use_clahe      = bool(self.config.get('color_use_clahe', False))
+        self.color_clahe_clip     = float(self.config.get('color_clahe_clip', 2.0))
+        self.min_contour_area     = self.config.get('min_contour_area', 50)
+        self.max_contour_area     = self.config.get('max_contour_area', 500)
+        self.confidence_threshold = self.config.get('confidence_threshold', 0.5)
+        self.display_confidence_threshold = max(0.0, min(1.0, self.config.get(
+            'display_confidence_threshold', self.confidence_threshold)))
+        self.tracker_max_distance         = self.config.get('tracker_max_distance', 70)
+        self.tracker_max_lost_frames      = self.config.get('tracker_max_lost_frames', 15)
+        self.tracker_distance_growth      = self.config.get('tracker_distance_growth', 0.35)
+        self.tracker_max_distance_cap     = self.config.get('tracker_max_distance_cap', 220)
+        self.tracker_velocity_damping     = self.config.get('tracker_velocity_damping', 0.85)
+        self.tracker_min_confidence_keep  = self.config.get('tracker_min_confidence_keep', 0.25)
+        self.use_tracker_prediction       = self.config.get('use_tracker_prediction', False)
+        self.counting_confidence_threshold = self.config.get('counting_confidence_threshold', 0.65)
+        self.counting_min_displacement_px  = self.config.get('counting_min_displacement_px', 12)
+        self.tracker_count_cooldown_seconds    = self.config.get('tracker_count_cooldown_seconds', 1.2)
+        self.global_count_min_interval_seconds = self.config.get('global_count_min_interval_seconds', 0.15)
+        self.count_allow_prediction        = self.config.get('count_allow_prediction', True)
+        self.count_max_lost_frames         = self.config.get('count_max_lost_frames', 2)
+        self.count_recent_detection_window = self.config.get('count_recent_detection_window', 6)
+        self.count_prediction_min_speed    = self.config.get('count_prediction_min_speed', 4.5)
+        self.count_relaxed_confidence_threshold = self.config.get(
+            'count_relaxed_confidence_threshold',
+            max(0.35, self.counting_confidence_threshold - 0.15))
+        self.bbox_smooth_alpha    = self.config.get('bbox_smooth_alpha', 0.65)
+        self.max_bbox_size_change = self.config.get('max_bbox_size_change', 2.2)
+        kernel_size = self.config.get('morphology_kernel_size', 3)
+        self.morph_kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        close_k = self.config.get('morph_close_kernel_size', 7)
+        self.close_kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_k, close_k))
+        self.shape_min_solidity    = self.config.get('shape_min_solidity', 0.30)
+        self.shape_min_compactness = self.config.get('shape_min_compactness', 0.08)
+        self.shape_min_extent      = self.config.get('shape_min_extent', 0.18)
+        self.shape_aspect_min      = self.config.get('shape_aspect_min', 0.25)
+        self.shape_aspect_max      = self.config.get('shape_aspect_max', 4.5)
+        self.conf_w_area        = self.config.get('confidence_weight_area', 0.25)
+        self.conf_w_aspect      = self.config.get('confidence_weight_aspect', 0.20)
+        self.conf_w_solidity    = self.config.get('confidence_weight_solidity', 0.20)
+        self.conf_w_compactness = self.config.get('confidence_weight_compactness', 0.15)
+        self.conf_w_darkness    = self.config.get('confidence_weight_darkness', 0.20)
+        self.nms_iou_threshold  = self.config.get('nms_iou_threshold', 0.10)
+        self.nms_merge_distance = self.config.get('nms_merge_distance', 20)
+        self.use_kalman_filter  = self.config.get('use_kalman_filter', True)
+        self.kalman_pn_pos      = float(self.config.get('kalman_process_noise_pos', 1.0))
+        self.kalman_pn_vel      = float(self.config.get('kalman_process_noise_vel', 4.0))
+        self.kalman_mn          = float(self.config.get('kalman_measurement_noise', 4.0))
+        self.pending_vote_frames  = self.config.get('pending_vote_frames', 2)
+        self.pending_vote_window  = self.config.get('pending_vote_window', 4)
+        self.pending_max_distance = self.config.get('pending_max_distance', 25)
+        self.center_gate_margin_ratio = max(0.0, min(0.2, self.config.get('center_gate_margin_ratio', 0.03)))
+        print('[CONFIG] Config hot-reloaded from dict')
 
     def _detect_yolo(self, frame):
         """YOLOv8n ONNX inference via cv2.dnn.

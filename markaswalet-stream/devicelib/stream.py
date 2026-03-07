@@ -10,6 +10,10 @@ import os
 
 # Import SwiftletCounter for frame processing
 from devicelib.swiftlet_counter import SwiftletCounter
+from devicelib.device import Device
+
+# How often (seconds) the RPi polls the API for updated config
+CONFIG_POLL_INTERVAL = 60
 
 TEST_VIDEO_PATH = 'test_video.mp4'  # For testing on non-Raspberry Pi environments
 # import raspberry pi pins to pull up digital pin for relay
@@ -56,6 +60,9 @@ class StreamingSwiftletCounter(SwiftletCounter):
         self.height = IMSIZE[1]
 
     def process_frame(self, frame):
+        # Apply color preprocessing (no-op when all params are at default)
+        if self._color_preprocessing_active():
+            frame = self._apply_color_preprocessing(frame)
         # Process single frame: detect, track, annotate
         fg_mask = self.bg_subtractor.apply(frame)
         mask = self._preprocess_mask(fg_mask)
@@ -194,6 +201,11 @@ def stream_process(
 
     # Initialize SwiftletCounter for streaming
     swiftlet_counter = StreamingSwiftletCounter(device_name=device_name, yolo_model_path=yolo_path)
+
+    # Device object for config polling (reads id/password from local SQLite)
+    _device_cfg = Device()
+    _last_config_poll = 0.0
+
     ret, frame_bgr = cap.read()
     if not ret or frame_bgr is None:
         print('Outer Image Capture Error')
@@ -203,6 +215,17 @@ def stream_process(
         print('Outer Image Capture Success')
     try:
         while True:
+            # Poll API for updated config every CONFIG_POLL_INTERVAL seconds
+            _now = time.time()
+            if _now - _last_config_poll >= CONFIG_POLL_INTERVAL:
+                _last_config_poll = _now
+                try:
+                    remote_config = _device_cfg.get_config()
+                    if remote_config is not None:
+                        swiftlet_counter.reload_config_from_dict(remote_config)
+                except Exception as _e:
+                    print(f'[CONFIG_POLL] Error fetching config: {_e}')
+
             # Turn on relay
             relay_on_time_between(LED_LINE=led_line)
             # Capture video frame

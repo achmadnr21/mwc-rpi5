@@ -158,6 +158,26 @@ class Device:
 
         return response.status_code, granted_stream_key
 
+    def get_config(self):
+        """Fetch device config from API using stored id+password.
+        Returns a dict (config payload) or None if unavailable."""
+        conn = self.local_database_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT ID, password FROM device_data LIMIT 1')
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        device_id, local_password = row
+        params = {'id': device_id, 'password': local_password}
+        try:
+            response = requests.get(self.API_URL + 'device-config', params=params, timeout=10)
+            if response.status_code == 200:
+                return response.json().get('config')
+        except Exception as e:
+            print(f'[GET_CONFIG] Error: {e}')
+        return None
+
     def run_process(self):
         status, stream_key = self.regist()
         return status, stream_key
