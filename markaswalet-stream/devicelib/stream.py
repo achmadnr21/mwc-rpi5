@@ -8,8 +8,8 @@ import subprocess
 import os
 # import devicelib.detector as detector
 
-# Import SwiftletCounter for frame processing
-from devicelib.swiftlet_counter import SwiftletCounter
+# Import YOLOSwiftletCounter for frame processing
+from devicelib.swiftlet_counter import YOLOSwiftletCounter
 
 # import raspberry pi pins to pull up digital pin for relay
 
@@ -32,27 +32,6 @@ FPS = 15  # Adjust to your desired frame rate
 # Initialize the PiCamera2
 picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration(main={"format": 'XRGB8888', "size": IMSIZE}))
-
-# Initialize SwiftletCounter for streaming (frame-by-frame)
-class StreamingSwiftletCounter(SwiftletCounter):
-    def __init__(self, config_path="config.json", device_name="RBW Lantai 1"):
-        # Initialize parent with streaming mode flag
-        super().__init__(input_video_path=None, output_video_path=None, config_path=config_path, streaming_mode=True, device_name=device_name)
-        self.fps = FPS
-        self.width = IMSIZE[0]
-        self.height = IMSIZE[1]
-
-    def process_frame(self, frame):
-        # Process single frame: detect, track, annotate
-        fg_mask = self.bg_subtractor.apply(frame)
-        mask = self._preprocess_mask(fg_mask)
-        detections = self.detect_birds(frame, mask)
-        detections = self._apply_temporal_consistency(detections)
-        self.update_trackers(frame, detections)
-        annotated = self.draw_annotations(frame)
-        self.frame_count += 1
-        self.detection_history.append(len(detections))
-        return annotated
 
 
 def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_name = 'markaswalet-capture-device'):
@@ -108,8 +87,8 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_na
     # Start ffmpeg subprocess
     ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE)
     # take picture and save it
-    # Initialize SwiftletCounter for streaming
-    swiftlet_counter = StreamingSwiftletCounter(device_name=device_name)
+    # Initialize YOLOSwiftletCounter for streaming
+    swiftlet_counter = YOLOSwiftletCounter(config_path="config.json", device_name=device_name)
     frame = picam2.capture_array()
     if frame is None:
         print('Outer Image Capture Error')

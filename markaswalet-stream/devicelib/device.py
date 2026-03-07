@@ -3,6 +3,7 @@ import random
 import string
 import requests
 import os
+import time
 
 class Device:
     def __init__(self, API_URL='https://markaswalet-iot.techiro.co.id/api/camera/'):
@@ -162,6 +163,37 @@ class Device:
         status, stream_key = self.regist()
         return status, stream_key
 
+
+    def report_count(self, count: int) -> bool:
+        """POST current bird count to the Techiro API. Non-blocking on error."""
+        try:
+            conn = self.local_database_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT ID, password FROM device_data LIMIT 1')
+            row = cursor.fetchone()
+            conn.close()
+
+            if not row:
+                print('[REPORT_COUNT] No device data found in local DB')
+                return False
+
+            device_id, password = row
+            payload = {
+                'id': device_id,
+                'password': password,
+                'bird_count': count,
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            response = requests.post(
+                self.API_URL + 'report-count',
+                json=payload,
+                timeout=10,
+            )
+            print(f'[REPORT_COUNT] Status: {response.status_code}')
+            return response.status_code in (200, 201)
+        except Exception as e:
+            print(f'[REPORT_COUNT] Error: {e}')
+            return False
 
     def print_status(self, status):
         if status == 200:
