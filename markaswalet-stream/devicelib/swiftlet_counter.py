@@ -133,6 +133,9 @@ class SwiftletCounter:
         # Statistics
         self.frame_count = 0
         self.detection_history = deque(maxlen=100)
+
+        # FPS tracking — rolling window of the last 30 frame timestamps
+        self._fps_times = deque(maxlen=30)
         
     def detect_birds(self, frame, mask):
         """Motion-based bird detection."""
@@ -755,6 +758,14 @@ class SwiftletCounter:
         """Draw bounding boxes and labels on the frame"""
         frame_height, frame_width = frame.shape[:2]
         self.center_box = self._get_center_box(frame_width, frame_height)
+
+        # Tick FPS counter
+        now = time.time()
+        self._fps_times.append(now)
+        if len(self._fps_times) >= 2:
+            fps_val = (len(self._fps_times) - 1) / (self._fps_times[-1] - self._fps_times[0])
+        else:
+            fps_val = 0.0
         x1, y1, x2, y2 = self.center_box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 2)
 
@@ -794,6 +805,15 @@ class SwiftletCounter:
         counter_text_thickness = int(self.config.get('counter_text_thickness', 2))
         counter_number_thickness = int(self.config.get('counter_number_thickness', 3))
         margin = 20
+
+        # --- Top Right: FPS ---
+        fps_label = f"FPS: {fps_val:.1f}"
+        ts_fps, _ = cv2.getTextSize(fps_label, font, text_scale, counter_text_thickness)
+        x_fps = frame_width - margin - ts_fps[0]
+        y_fps = margin + ts_fps[1]
+        fps_color = (0, 255, 0) if fps_val >= 8 else (0, 165, 255) if fps_val >= 4 else (0, 0, 255)
+        cv2.putText(frame, fps_label, (x_fps, y_fps),
+            font, text_scale, fps_color, counter_text_thickness)
 
         # --- Bottom Left: Device Name + Counter Burung Walet ---
         count_prefix = "Counter Burung Walet: "
