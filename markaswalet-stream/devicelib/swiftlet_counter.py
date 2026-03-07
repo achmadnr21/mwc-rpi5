@@ -61,6 +61,8 @@ class SwiftletCounter:
         self.center_box_height_ratio = center_box_height_ratio if center_box_height_ratio is not None else config_center_height
         self.center_box_width_ratio = max(0.05, min(0.95, self.center_box_width_ratio))
         self.center_box_height_ratio = max(0.05, min(0.95, self.center_box_height_ratio))
+        self.center_gate_margin_ratio = self.config.get('center_gate_margin_ratio', 0.03)
+        self.center_gate_margin_ratio = max(0.0, min(0.2, self.center_gate_margin_ratio))
         self.center_box = self._get_center_box(self.width, self.height)
         
         # Detection parameters - back to working values
@@ -71,6 +73,24 @@ class SwiftletCounter:
         self.display_confidence_threshold = max(0.0, min(1.0, self.display_confidence_threshold))
         self.tracker_max_distance = self.config.get('tracker_max_distance', 70)
         self.tracker_max_lost_frames = self.config.get('tracker_max_lost_frames', 15)
+        self.tracker_distance_growth = self.config.get('tracker_distance_growth', 0.35)
+        self.tracker_max_distance_cap = self.config.get('tracker_max_distance_cap', 220)
+        self.tracker_velocity_damping = self.config.get('tracker_velocity_damping', 0.85)
+        self.tracker_min_confidence_keep = self.config.get('tracker_min_confidence_keep', 0.25)
+        self.use_tracker_prediction = self.config.get('use_tracker_prediction', False)
+        self.counting_confidence_threshold = self.config.get('counting_confidence_threshold', 0.65)
+        self.counting_min_displacement_px = self.config.get('counting_min_displacement_px', 12)
+        self.tracker_count_cooldown_seconds = self.config.get('tracker_count_cooldown_seconds', 1.2)
+        self.global_count_min_interval_seconds = self.config.get('global_count_min_interval_seconds', 0.15)
+        self.count_allow_prediction = self.config.get('count_allow_prediction', True)
+        self.count_max_lost_frames = self.config.get('count_max_lost_frames', 2)
+        self.count_recent_detection_window = self.config.get('count_recent_detection_window', 6)
+        self.count_prediction_min_speed = self.config.get('count_prediction_min_speed', 4.5)
+        self.count_relaxed_confidence_threshold = self.config.get(
+            'count_relaxed_confidence_threshold',
+            max(0.35, self.counting_confidence_threshold - 0.15)
+        )
+        self._last_count_time = 0.0
         self.bbox_smooth_alpha = self.config.get('bbox_smooth_alpha', 0.65)
         self.max_bbox_size_change = self.config.get('max_bbox_size_change', 2.2)
         
@@ -88,7 +108,8 @@ class SwiftletCounter:
         self.detection_history = deque(maxlen=100)  # Keep last 100 frame detection counts
         
         # Static detection parameters - made more conservative
-        self.enable_static_detection = self.config.get('enable_static_detection', True)
+        self.motion_only_mode = self.config.get('motion_only_mode', True)
+        self.enable_static_detection = self.config.get('enable_static_detection', False)
         self.static_detection_interval = self.config.get('static_detection_interval', 60)  # Less frequent
         self.previous_frame = None
         self.frame_difference_threshold = self.config.get('frame_difference_threshold', 20)
@@ -101,7 +122,7 @@ class SwiftletCounter:
         
         # Static detection (new) - balanced approach
         static_detections = []
-        if (self.enable_static_detection and 
+        if (not self.motion_only_mode and self.enable_static_detection and 
             self.frame_count % self.static_detection_interval == 0 and
             len(motion_detections) < 5):  # Allow when moderate motion detections
             static_detections = self._detect_static_birds(frame)
@@ -439,25 +460,119 @@ class SwiftletCounter:
         x1, y1, x2, y2 = self.center_box
         return x1 <= x <= x2 and y1 <= y <= y2
 
+    def _get_expanded_center_box(self, frame_width, frame_height):
+        """Expand center box with margin to better capture fast crossing."""
+        x1, y1, x2, y2 = self.center_box
+        margin = int(min(frame_width, frame_height) * self.center_gate_margin_ratio)
+        ex1 = max(0, x1 - margin)
+        ey1 = max(0, y1 - margin)
+        ex2 = min(frame_width - 1, x2 + margin)
+        ey2 = min(frame_height - 1, y2 + margin)
+        return (ex1, ey1, ex2, ey2)
+
+    def _line_intersects_box(self, p1, p2, box):
+        """Check if movement segment intersects box."""
+        if p1 is None or p2 is None:
+            return False
+        x1, y1, x2, y2 = box
+        rect = (x1, y1, max(1, x2 - x1 + 1), max(1, y2 - y1 + 1))
+        pt1 = (int(p1[0]), int(p1[1]))
+        pt2 = (int(p2[0]), int(p2[1]))
+        intersects, _, _ = cv2.clipLine(rect, pt1, pt2)
+        return intersects
+
+    def _is_count_allowed(self, tracker, now_time, movement_px):
+        """Debounce count events to prevent spikes."""
+        last_update_source = tracker.get('last_update_source', 'detection')
+        lost_frames = tracker.get('lost_frames', 0)
+        if lost_frames > self.count_max_lost_frames:
+            return False
+        if movement_px < self.counting_min_displacement_px:
+            return False
+
+        confidence = tracker.get('confidence', 0.0)
+        if last_update_source == 'detection':
+            if confidence < self.counting_confidence_threshold:
+                return False
+        else:
+            if not self.count_allow_prediction:
+                return False
+            last_det_frame = tracker.get('last_detection_frame', -10_000)
+            if (self.frame_count - last_det_frame) > self.count_recent_detection_window:
+                return False
+            vx, vy = tracker.get('velocity', (0.0, 0.0))
+            speed = float(np.sqrt(vx * vx + vy * vy))
+            if speed < self.count_prediction_min_speed:
+                return False
+            if confidence < self.count_relaxed_confidence_threshold:
+                return False
+
+        last_counted_time = tracker.get('last_counted_time')
+        if last_counted_time is not None:
+            if (now_time - last_counted_time) < self.tracker_count_cooldown_seconds:
+                return False
+
+        if (now_time - self._last_count_time) < self.global_count_min_interval_seconds:
+            return False
+
+        return True
+
     def _update_crossing_count(self, tracker, bbox):
-        """Update counter when tracker crosses center box boundary."""
+        """Update counter based on robust crossing checks (anti-spike)."""
         x, y, w, h = bbox
-        center = (x + w // 2, y + h // 2)
-        inside_now = self._is_inside_center_box(center)
+        center_now = (x + w // 2, y + h // 2)
+        center_prev = tracker.get('prev_center')
+        inside_now = self._is_inside_center_box(center_now)
         inside_before = tracker.get('inside_center_box')
 
-        if inside_before is None:
+        if inside_before is None or center_prev is None:
             tracker['inside_center_box'] = inside_now
+            tracker['prev_center'] = center_now
             return
 
+        frame_w = max(1, self.width)
+        frame_h = max(1, self.height)
+        expanded_box = self._get_expanded_center_box(frame_w, frame_h)
+        crossed_gate = self._line_intersects_box(center_prev, center_now, expanded_box)
+
+        movement_px = float(np.sqrt(
+            (center_now[0] - center_prev[0]) ** 2 +
+            (center_now[1] - center_prev[1]) ** 2
+        ))
+        now_time = time.time()
+
+        did_count = False
         if inside_before != inside_now:
-            if inside_before and not inside_now:
-                self.crossing_count += 1
-                self.cross_in_to_out += 1
-            elif (not inside_before) and inside_now:
-                self.crossing_count = max(0, self.crossing_count - 1)
-                self.cross_out_to_in += 1
+            if self._is_count_allowed(tracker, now_time, movement_px):
+                if inside_before and not inside_now:
+                    self.crossing_count += 1
+                    self.cross_in_to_out += 1
+                    did_count = True
+                elif (not inside_before) and inside_now:
+                    self.crossing_count = max(0, self.crossing_count - 1)
+                    self.cross_out_to_in += 1
+                    did_count = True
+        elif crossed_gate and (not inside_before) and (not inside_now):
+            if self._is_count_allowed(tracker, now_time, movement_px):
+                gate_cx = (self.center_box[0] + self.center_box[2]) / 2.0
+                gate_cy = (self.center_box[1] + self.center_box[3]) / 2.0
+                prev_dist = np.sqrt((center_prev[0] - gate_cx) ** 2 + (center_prev[1] - gate_cy) ** 2)
+                curr_dist = np.sqrt((center_now[0] - gate_cx) ** 2 + (center_now[1] - gate_cy) ** 2)
+                if curr_dist > prev_dist:
+                    self.crossing_count += 1
+                    self.cross_in_to_out += 1
+                    did_count = True
+                elif curr_dist < prev_dist:
+                    self.crossing_count = max(0, self.crossing_count - 1)
+                    self.cross_out_to_in += 1
+                    did_count = True
+
+        if did_count:
+            tracker['last_counted_time'] = now_time
+            self._last_count_time = now_time
+
         tracker['inside_center_box'] = inside_now
+        tracker['prev_center'] = center_now
 
     def _smooth_bbox(self, prev_bbox, new_bbox):
         """Apply EMA smoothing to bbox to reduce jitter."""
@@ -501,8 +616,23 @@ class SwiftletCounter:
 
     def _create_tracker(self):
         """Create tracker with compatibility fallback across OpenCV builds."""
-        factories = []
+        force_mosse_only = self.config.get('force_mosse_only', True)
         legacy = getattr(cv2, 'legacy', None)
+
+        if force_mosse_only:
+            mosse_factory = None
+            if legacy is not None:
+                mosse_factory = getattr(legacy, 'TrackerMOSSE_create', None)
+            if mosse_factory is None:
+                mosse_factory = getattr(cv2, 'TrackerMOSSE_create', None)
+            if callable(mosse_factory):
+                try:
+                    return mosse_factory()
+                except Exception:
+                    return None
+            return None
+
+        factories = []
         if legacy is not None:
             factories.extend([
                 getattr(legacy, 'TrackerMOSSE_create', None),
@@ -535,6 +665,20 @@ class SwiftletCounter:
         for tracker in self.trackers:
             prev_x, prev_y, prev_w, prev_h = tracker['bbox']
             prev_center = (prev_x + prev_w // 2, prev_y + prev_h // 2)
+            lost_frames = tracker.get('lost_frames', 0)
+            velocity = tracker.get('velocity', (0.0, 0.0))
+
+            expected_center = prev_center
+            if lost_frames > 0:
+                expected_center = (
+                    int(prev_center[0] + velocity[0]),
+                    int(prev_center[1] + velocity[1])
+                )
+
+            allowed_distance = min(
+                self.tracker_max_distance_cap,
+                self.tracker_max_distance * (1.0 + lost_frames * self.tracker_distance_growth)
+            )
 
             best_match = None
             best_distance = float('inf')
@@ -544,10 +688,10 @@ class SwiftletCounter:
                     continue
                 det_center = detection['centroid']
                 distance = np.sqrt(
-                    (prev_center[0] - det_center[0]) ** 2 +
-                    (prev_center[1] - det_center[1]) ** 2
+                    (expected_center[0] - det_center[0]) ** 2 +
+                    (expected_center[1] - det_center[1]) ** 2
                 )
-                if distance < best_distance and distance < self.tracker_max_distance:
+                if distance < best_distance and distance < allowed_distance:
                     best_distance = distance
                     best_match = i
 
@@ -568,6 +712,16 @@ class SwiftletCounter:
                     continue
                 tracker['confidence'] = detection['confidence']
                 tracker['detection_type'] = detection.get('type', tracker.get('detection_type', 'motion'))
+                new_center = (
+                    tracker['bbox'][0] + tracker['bbox'][2] // 2,
+                    tracker['bbox'][1] + tracker['bbox'][3] // 2
+                )
+                tracker['velocity'] = (
+                    float(new_center[0] - prev_center[0]),
+                    float(new_center[1] - prev_center[1])
+                )
+                tracker['last_update_source'] = 'detection'
+                tracker['last_detection_frame'] = self.frame_count
                 tracker['lost_frames'] = 0
                 self._update_crossing_count(tracker, tracker['bbox'])
                 updated_trackers.append(tracker)
@@ -576,7 +730,7 @@ class SwiftletCounter:
             # Fallback: use OpenCV tracker prediction when no detection matched
             tracker_obj = tracker.get('tracker')
             success = False
-            if tracker_obj is not None:
+            if self.use_tracker_prediction and tracker_obj is not None:
                 try:
                     success, box = tracker_obj.update(frame)
                 except Exception:
@@ -589,13 +743,24 @@ class SwiftletCounter:
                     tracker['bbox'] = self._smooth_bbox(tracker['bbox'], candidate_bbox)
                 tracker['confidence'] *= 0.95
                 tracker['lost_frames'] = tracker.get('lost_frames', 0) + 1
+                tracker['last_update_source'] = 'prediction'
                 self._update_crossing_count(tracker, tracker['bbox'])
             else:
                 tracker['lost_frames'] = tracker.get('lost_frames', 0) + 1
-                tracker['confidence'] *= 0.9
+                vx, vy = velocity
+                damping = float(self.tracker_velocity_damping)
+                px = int(prev_x + vx)
+                py = int(prev_y + vy)
+                px = max(0, min(self.width - prev_w, px))
+                py = max(0, min(self.height - prev_h, py))
+                tracker['bbox'] = (px, py, prev_w, prev_h)
+                tracker['velocity'] = (vx * damping, vy * damping)
+                tracker['confidence'] *= 0.96
+                tracker['last_update_source'] = 'prediction'
+                self._update_crossing_count(tracker, tracker['bbox'])
 
             if (
-                tracker['confidence'] > 0.3 and
+                tracker['confidence'] > self.tracker_min_confidence_keep and
                 tracker.get('lost_frames', 0) <= self.tracker_max_lost_frames
             ):
                 updated_trackers.append(tracker)
@@ -629,7 +794,12 @@ class SwiftletCounter:
                             'confidence': detection['confidence'],
                             'detection_type': detection.get('type', 'motion'),
                             'lost_frames': 0,
-                            'inside_center_box': self._is_inside_center_box((x + w // 2, y + h // 2))
+                            'inside_center_box': self._is_inside_center_box((x + w // 2, y + h // 2)),
+                            'prev_center': (x + w // 2, y + h // 2),
+                            'velocity': (0.0, 0.0),
+                            'last_counted_time': None,
+                            'last_update_source': 'detection',
+                            'last_detection_frame': self.frame_count
                         })
                     else:
                         print(f"Failed to initialize MOSSE tracker for detection {i}")
@@ -681,6 +851,8 @@ class SwiftletCounter:
         # Draw total count
         count_prefix = "Counter Burung Walet: "
         count_number = str(self.crossing_count)
+        counter_text_thickness = int(self.config.get('counter_text_thickness', 2))
+        counter_number_thickness = int(self.config.get('counter_number_thickness', 3))
 
         # Use slim font style consistent with debug text
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -704,11 +876,11 @@ class SwiftletCounter:
 
         # Draw the location text (no outline)
         cv2.putText(frame, self.device_name, (x_position, y_position_title), 
-            font, text_scale, (255, 255, 255), 1)
+            font, text_scale, (255, 255, 255), counter_text_thickness)
 
         # Draw the prefix (no outline)
         cv2.putText(frame, count_prefix, (x_position, y_position_count), 
-            font, text_scale, (255, 255, 255), 1)
+            font, text_scale, (255, 255, 255), counter_text_thickness)
 
         # Calculate the position for the count number
         number_x = x_position + text_size_prefix[0]
@@ -724,7 +896,7 @@ class SwiftletCounter:
 
         # Then draw the main count number in success green on top
         cv2.putText(frame, count_number, (number_x, y_position_count), 
-            font, text_scale_number, (50, 255, 50), 1)
+            font, text_scale_number, (50, 255, 50), counter_number_thickness)
 
 
         return frame
