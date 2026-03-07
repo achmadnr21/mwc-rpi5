@@ -884,9 +884,10 @@ class SwiftletCounter:
         live_inside = sum(1 for t in visible_trackers if t.get('inside_center_box', False))
         live_outside = len(visible_trackers) - live_inside
 
-        live_title = "Live Counter"
-        live_dalam = f"Dalam: {live_inside}"
-        live_luar  = f"Luar:  {live_outside}"
+        live_total = len(visible_trackers)
+        live_title  = f"Live Counter: {live_total}"
+        live_dalam  = f"Dalam: {live_inside}"
+        live_luar   = f"Luar:  {live_outside}"
 
         # Measure widths for right-alignment
         ts_live_title, _ = cv2.getTextSize(live_title, font, text_scale, 1)
