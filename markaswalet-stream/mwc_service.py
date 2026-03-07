@@ -48,7 +48,7 @@ if __name__ == '__main__':
                 print('[OUTER][STREAM_KEY] : Stream Key not granted')
                 continue
             while True:
-                stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey, device_name=device_identity_name)
+                stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey, device_name=device_identity_name, use_test_video=True)
         except Exception as e:
             print(f'Error with pesan\t: {e}')
         time.sleep(5)

@@ -11,6 +11,7 @@ import os
 # Import SwiftletCounter for frame processing
 from devicelib.swiftlet_counter import SwiftletCounter
 
+TEST_VIDEO_PATH = 'test_video.mp4'  # For testing on non-Raspberry Pi environments
 # import raspberry pi pins to pull up digital pin for relay
 
 # import gpiod  # Raspberry Pi specific
@@ -30,6 +31,10 @@ def relay_on_time_between(LED_LINE = None):
 
 IMSIZE = (640, 480)
 FPS = 10  # Lighter streaming frame rate
+GOP_SIZE = int(FPS * 1.5)  # 1.5-second GOP, better quality at same latency class
+VIDEO_BITRATE = '280k'
+VIDEO_MAXRATE = '320k'
+VIDEO_BUFSIZE = '640k'
 
 # Initialize the PiCamera2
 # picam2 = Picamera2()  # Raspberry Pi specific
@@ -74,7 +79,13 @@ def _select_video_encoder():
     return 'libx264'
 
 
-def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_name = 'markaswalet-capture-device'):
+def stream_process(
+    stream_ip='103.193.179.252',
+    stream_key='mwcdef',
+    device_name='markaswalet-capture-device',
+    use_test_video=False,
+    test_video_path=TEST_VIDEO_PATH
+):
 
     if stream_key == 'mwcdef' or stream_key is None:
         print('Exiting from the program')
@@ -87,11 +98,11 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_na
     if video_encoder == 'h264_v4l2m2m':
         video_encode_args = [
             '-c:v', 'h264_v4l2m2m',
-            '-b:v', '150k',
-            '-maxrate', '180k',
-            '-bufsize', '360k',
-            '-g', '30',
-            '-keyint_min', '30',
+            '-b:v', VIDEO_BITRATE,
+            '-maxrate', VIDEO_MAXRATE,
+            '-bufsize', VIDEO_BUFSIZE,
+            '-g', str(GOP_SIZE),
+            '-keyint_min', str(GOP_SIZE),
             '-sc_threshold', '0',
             '-bf', '0',
             '-pix_fmt', 'yuv420p'
@@ -99,31 +110,38 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_na
     else:
         video_encode_args = [
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',
+            '-preset', 'superfast',
             '-tune', 'zerolatency',
-            '-b:v', '150k',
-            '-maxrate', '180k',
-            '-bufsize', '360k',
-            '-g', '30',
-            '-keyint_min', '30',
+            '-b:v', VIDEO_BITRATE,
+            '-maxrate', VIDEO_MAXRATE,
+            '-bufsize', VIDEO_BUFSIZE,
+            '-g', str(GOP_SIZE),
+            '-keyint_min', str(GOP_SIZE),
             '-sc_threshold', '0',
             '-bf', '0',
             '-pix_fmt', 'yuv420p',
-            '-profile:v', 'baseline'
+            '-profile:v', 'baseline',
+            '-x264-params', f'keyint={GOP_SIZE}:min-keyint={GOP_SIZE}:scenecut=0:rc-lookahead=0'
         ]
 
     command = [
         'ffmpeg',
         '-loglevel', 'error',
         '-y',
+        '-fflags', 'nobuffer',
         '-f', 'rawvideo',
-        '-pix_fmt', 'rgb24', 
+        '-pix_fmt', 'bgr24',
         '-s', f'{IMSIZE[0]}x{IMSIZE[1]}', 
         '-r', str(FPS), 
         '-i', '-', 
     ] + video_encode_args + [
+        '-flags', 'low_delay',
         '-an',
+        '-flush_packets', '1',
+        '-muxdelay', '0',
+        '-muxpreload', '0',
         '-f', 'flv',  # format for RTMP
+        '-rtmp_live', 'live',
         f'rtmp://{stream_ip}:1935/markaswalet-live/{stream_key}'  # RTMP server URL
     ]
 
@@ -133,13 +151,23 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_na
     print(f'Start Streaming with stream id = {stream_key}')
     print(f'rtmp://{stream_ip}:1935/markaswalet-live/{stream_key}')
     print(f'====================== START CAMERA  =============================')
+
     # picam2.start()  # Raspberry Pi specific
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, IMSIZE[0])
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, IMSIZE[1])
-    cap.set(cv2.CAP_PROP_FPS, FPS)
+    if use_test_video:
+        cap = cv2.VideoCapture(test_video_path)
+        print(f'Input source: test video -> {test_video_path}')
+    else:
+        cap = cv2.VideoCapture(0)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, IMSIZE[0])
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, IMSIZE[1])
+        cap.set(cv2.CAP_PROP_FPS, FPS)
+        print('Input source: local camera (cv2.VideoCapture(0))')
+
     if not cap.isOpened():
-        print('Cannot open local camera (cv2.VideoCapture(0))')
+        if use_test_video:
+            print(f'Cannot open test video: {test_video_path}')
+        else:
+            print('Cannot open local camera (cv2.VideoCapture(0))')
         return
     print(f'====================== START SENDING =============================')
     # setups ir led for night and day
@@ -152,7 +180,7 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_na
     led_line = None
     
     # Start ffmpeg subprocess
-    ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE)
+    ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE, bufsize=0)
     # take picture and save it
     # Initialize SwiftletCounter for streaming
     swiftlet_counter = StreamingSwiftletCounter(device_name=device_name)
@@ -170,7 +198,14 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_na
             # Capture video frame
             ret, frame_bgr = cap.read()
             if not ret or frame_bgr is None:
-                break
+                if use_test_video:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, frame_bgr = cap.read()
+                    if not ret or frame_bgr is None:
+                        print('Test video loop failed to read frame')
+                        break
+                else:
+                    break
 
             frame_bgr = cv2.resize(frame_bgr, IMSIZE)
             frame_bgr = np.asarray(frame_bgr, dtype=np.uint8)
@@ -182,10 +217,8 @@ def stream_process(stream_ip = '103.193.179.252' ,stream_key='mwcdef', device_na
             current_time = datetime.now().strftime("%H:%M:%S")
             cv2.putText(processed_frame, current_time, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA) # red
 
-            # Convert to RGB for ffmpeg
-            frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
             try:
-                ffmpeg.stdin.write(frame_rgb.tobytes())
+                ffmpeg.stdin.write(processed_frame.tobytes())
             except Exception as e:
                 print(f"Error writing to ffmpeg stdin: {e}")
                 break
