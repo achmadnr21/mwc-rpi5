@@ -848,70 +848,64 @@ class SwiftletCounter:
             cv2.putText(frame, label, (x + 2, label_y), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
-        # Draw total count
-        count_prefix = "Counter Burung Walet: "
-        count_number = str(self.crossing_count)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        base_width = 1920
+        text_scale = 1.2 * (frame_width / base_width)
+        text_scale_number = 1.8 * (frame_width / base_width)
         counter_text_thickness = int(self.config.get('counter_text_thickness', 2))
         counter_number_thickness = int(self.config.get('counter_number_thickness', 3))
+        margin = 20
 
-        # Use slim font style consistent with debug text
-        font = cv2.FONT_HERSHEY_SIMPLEX
+        # --- Bottom Left: Device Name + Counter Burung Walet ---
+        count_prefix = "Counter Burung Walet: "
+        count_number = str(self.crossing_count)
 
-        # Calculate responsive text scale based on frame width
-        base_width = 1920  # Reference width for scaling
-        text_scale = 1.2 * (frame_width / base_width)  # Responsive scaling
-
-        # Calculate responsive positions
-        x_position = int(frame_width * 0.65)  # 65% from left
-        y_position_title = int(frame_height * 0.06)  # 6% from top
-        y_position_count = int(frame_height * 0.11)  # 11% from top
-
-        # Ensure text fits within frame
-        text_size_title, _ = cv2.getTextSize(self.device_name, font, text_scale, 1)
         text_size_prefix, _ = cv2.getTextSize(count_prefix, font, text_scale, 1)
+        text_size_number, _ = cv2.getTextSize(count_number, font, text_scale_number, 1)
+        text_size_title, _ = cv2.getTextSize(self.device_name, font, text_scale, 1)
 
-        # Adjust position if text would go outside frame
-        if x_position + text_size_title[0] > frame_width - 20:
-            x_position = frame_width - text_size_title[0] - 20
+        line_h = int(text_size_prefix[1] * 1.6)
 
-        # Draw the location text (no outline)
-        cv2.putText(frame, self.device_name, (x_position, y_position_title), 
+        # Stack from bottom: count row, then title above it
+        y_bl_count = frame_height - margin
+        y_bl_title = y_bl_count - line_h
+
+        x_bl = margin
+
+        cv2.putText(frame, self.device_name, (x_bl, y_bl_title),
             font, text_scale, (255, 255, 255), counter_text_thickness)
-
-        # Draw the prefix (no outline)
-        cv2.putText(frame, count_prefix, (x_position, y_position_count), 
+        cv2.putText(frame, count_prefix, (x_bl, y_bl_count),
             font, text_scale, (255, 255, 255), counter_text_thickness)
-
-        # Calculate the position for the count number
-        number_x = x_position + text_size_prefix[0]
-
-        # Ensure number fits within frame
-        text_size_number, _ = cv2.getTextSize(count_number, font, text_scale, 1)
-        if number_x + text_size_number[0] > frame_width - 20:
-            number_x = x_position
-            y_position_count += int(text_size_prefix[1] * 1.5)  # Move to next line
-
-        
-        text_scale_number = 1.8 * (frame_width / base_width)  # Responsive scaling
-
-        # Then draw the main count number in success green on top
-        cv2.putText(frame, count_number, (number_x, y_position_count),
+        cv2.putText(frame, count_number, (x_bl + text_size_prefix[0], y_bl_count),
             font, text_scale_number, (50, 255, 50), counter_number_thickness)
 
-        # Draw Live Counter (per-frame bbox count: inside vs outside center zone)
+        # --- Bottom Right: Live Counter (Dalam & Luar) ---
         visible_trackers = [t for t in self.trackers if t.get('confidence', 0) >= self.display_confidence_threshold]
         live_inside = sum(1 for t in visible_trackers if t.get('inside_center_box', False))
         live_outside = len(visible_trackers) - live_inside
 
-        y_position_live_title = int(frame_height * 0.17)
-        y_position_live_inside = int(frame_height * 0.22)
-        y_position_live_outside = int(frame_height * 0.27)
+        live_title = "Live Counter"
+        live_dalam = f"Dalam: {live_inside}"
+        live_luar  = f"Luar:  {live_outside}"
 
-        cv2.putText(frame, "Live Counter", (x_position, y_position_live_title),
+        # Measure widths for right-alignment
+        ts_live_title, _ = cv2.getTextSize(live_title, font, text_scale, 1)
+        ts_live_dalam, _ = cv2.getTextSize(live_dalam, font, text_scale, 1)
+        ts_live_luar,  _ = cv2.getTextSize(live_luar,  font, text_scale, 1)
+
+        max_w = max(ts_live_title[0], ts_live_dalam[0], ts_live_luar[0])
+        x_br = frame_width - margin - max_w
+
+        # Stack from bottom: luar, dalam, title
+        y_br_luar  = frame_height - margin
+        y_br_dalam = y_br_luar  - line_h
+        y_br_title = y_br_dalam - line_h
+
+        cv2.putText(frame, live_title, (x_br, y_br_title),
             font, text_scale, (255, 255, 0), counter_text_thickness)
-        cv2.putText(frame, f"Dalam: {live_inside}", (x_position, y_position_live_inside),
+        cv2.putText(frame, live_dalam, (x_br, y_br_dalam),
             font, text_scale, (255, 255, 255), counter_text_thickness)
-        cv2.putText(frame, f"Luar:  {live_outside}", (x_position, y_position_live_outside),
+        cv2.putText(frame, live_luar,  (x_br, y_br_luar),
             font, text_scale, (255, 255, 255), counter_text_thickness)
 
         return frame
