@@ -94,10 +94,6 @@ class SwiftletCounter:
         self.bbox_smooth_alpha = self.config.get('bbox_smooth_alpha', 0.65)
         self.max_bbox_size_change = self.config.get('max_bbox_size_change', 2.2)
         
-        # Motion history for temporal consistency
-        self.motion_history_frames = self.config.get('motion_history_frames', 5)
-        self.frame_buffer = deque(maxlen=self.motion_history_frames)
-        
         # Morphological kernels
         kernel_size = self.config.get('morphology_kernel_size', 3)
         self.morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
@@ -136,49 +132,20 @@ class SwiftletCounter:
 
         # Statistics
         self.frame_count = 0
-        self.detection_history = deque(maxlen=100)  # Keep last 100 frame detection counts
-
-        # Static detection parameters - made more conservative
-        self.motion_only_mode = self.config.get('motion_only_mode', True)
-        self.enable_static_detection = self.config.get('enable_static_detection', False)
-        self.static_detection_interval = self.config.get('static_detection_interval', 60)  # Less frequent
-        self.previous_frame = None
-        self.frame_difference_threshold = self.config.get('frame_difference_threshold', 20)
-        self.static_frames_buffer = deque(maxlen=5)  # Buffer to check for truly static objects
+        self.detection_history = deque(maxlen=100)
         
     def detect_birds(self, frame, mask):
-        """Enhanced bird detection with motion and static detection"""
-        # Motion-based detection (existing)
-        motion_detections = self._detect_motion_birds(frame, mask)
-        
-        # Static detection (new) - balanced approach
-        static_detections = []
-        if (not self.motion_only_mode and self.enable_static_detection and 
-            self.frame_count % self.static_detection_interval == 0 and
-            len(motion_detections) < 5):  # Allow when moderate motion detections
-            static_detections = self._detect_static_birds(frame)
-        
-        # Combine detections and remove duplicates
-        all_detections = self._combine_detections(motion_detections, static_detections)
-        
-        # Debug output every 10 frames
-        if self.frame_count % 10 == 0:
-            confidences = [d['confidence'] for d in all_detections]
-            max_conf = max(confidences) if confidences else 0
-            avg_conf = np.mean(confidences) if confidences else 0
-            # print(f"Frame {self.frame_count}: Motion={len(motion_detections)}, Static={len(static_detections)}, Combined={len(all_detections)}")
-            # print(f"  Confidences: max={max_conf:.3f}, avg={avg_conf:.3f}, above_0.5={sum(1 for c in confidences if c > 0.5)}")
-        
-        return all_detections
+        """Motion-based bird detection."""
+        return self._detect_motion_birds(frame, mask)
     
     def _detect_motion_birds(self, frame, mask):
         """Shape-aware motion detection with 5-feature confidence scoring.
 
-        Grayscale is computed once per frame (not per contour) for darkness scoring.
-        All detected blobs pass through hard shape gates before confidence is scored.
-        Finally, fragment NMS merges blobs from the same bird before returning.
+        Grayscale and frame mean are computed once per frame.
+        Hull, hull_area, and perimeter are computed ONCE per contour and passed
+        to both the hard shape gate and the confidence scorer — no duplicate work.
+        Fragment NMS merges blobs from the same bird before returning.
         """
-        # Compute grayscale + frame mean once — reused by every contour
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame_mean = float(np.mean(gray))
 
@@ -192,13 +159,15 @@ class SwiftletCounter:
 
             x, y, w, h = cv2.boundingRect(contour)
 
-            # Hard shape gate — fast reject non-bird contours
-            if not self._is_valid_bird_shape(contour, area, w, h):
+            # Pre-compute shape descriptors once — shared by gate and scorer
+            hull_area = cv2.contourArea(cv2.convexHull(contour))
+            perimeter = cv2.arcLength(contour, True)
+
+            if not self._is_valid_bird_shape(area, w, h, hull_area, perimeter):
                 continue
 
-            # 5-feature confidence scoring
             gray_roi = gray[y:y + h, x:x + w]
-            features = self._score_shape_features(contour, area, w, h, gray_roi, frame_mean)
+            features = self._score_shape_features(area, w, h, gray_roi, frame_mean, hull_area, perimeter)
             confidence = self._calculate_confidence_v2(features)
 
             if confidence > self.confidence_threshold:
@@ -212,13 +181,12 @@ class SwiftletCounter:
         # Merge fragments from the same bird before returning
         return self._merge_detections_nms(raw)
 
-    def _score_shape_features(self, contour, area, w, h, gray_roi, frame_mean):
+    def _score_shape_features(self, area, w, h, gray_roi, frame_mean, hull_area, perimeter):
         """Compute 5 normalized [0,1] shape feature scores for a contour.
 
-        Features are tuned to indoor swiftlet characteristics:
-        - Dark (black) body against bright ceiling
-        - Crescent/wide aspect ratio when flying
-        - Compact, solid blob after fragment merge
+        Accepts pre-computed hull_area and perimeter — no duplicate work.
+        Darkness uses a clean relative ratio (frame_mean - roi_mean) / frame_mean
+        which is stable in any room brightness, unlike the old saturating formula.
         """
         # 1. Area score — optimal indoor swiftlet range 80-250 px²
         if 80 <= area <= 250:
@@ -239,22 +207,18 @@ class SwiftletCounter:
         else:
             ar_score = 0.3
 
-        # 3. Solidity score — convex hull fill ratio
-        hull = cv2.convexHull(contour)
-        hull_area = cv2.contourArea(hull)
+        # 3. Solidity score — convex hull fill ratio (pre-computed)
         solidity = (area / hull_area) if hull_area > 0 else 0.0
         sol_score = min(1.0, solidity / 0.65)
 
-        # 4. Compactness score — 4π·area/perimeter²
-        perimeter = cv2.arcLength(contour, True)
+        # 4. Compactness score — 4π·area/perimeter² (pre-computed)
         compactness = (4.0 * math.pi * area / (perimeter * perimeter)) if perimeter > 0 else 0.0
         comp_score = min(1.0, compactness / 0.30)
 
-        # 5. Darkness score — swiftlets are dark against bright ceilings
+        # 5. Darkness score — relative ratio: stable across all room brightness levels
         if gray_roi.size > 0:
             roi_mean = float(np.mean(gray_roi))
-            # Darker than frame average → high score; lighter → low score
-            darkness_score = max(0.0, min(1.0, 1.5 * (1.0 - roi_mean / max(1.0, frame_mean * 1.1))))
+            darkness_score = max(0.0, min(1.0, (frame_mean - roi_mean) / max(1.0, frame_mean)))
         else:
             darkness_score = 0.5
 
@@ -337,215 +301,6 @@ class SwiftletCounter:
 
         return result
     
-    def _detect_static_birds(self, frame):
-        """Detect static birds using conservative shape and texture analysis"""
-        detections = []
-        
-        # Store current frame for temporal consistency check
-        self.static_frames_buffer.append(frame.copy())
-        
-        # Only proceed if we have enough frames for comparison
-        if len(self.static_frames_buffer) < 3:
-            return detections
-        
-        # Convert to grayscale for analysis
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Apply stronger Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-        
-        # Use balanced adaptive thresholding
-        adaptive_thresh = cv2.adaptiveThreshold(
-            blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 13, 5
-        )
-        
-        # More aggressive morphological operations to reduce false positives
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        cleaned = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_OPEN, kernel)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, kernel)
-        
-        # Further erosion to remove small artifacts
-        erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        cleaned = cv2.erode(cleaned, erode_kernel, iterations=1)
-        
-        # Find contours in the thresholded image
-        contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            
-            # Balanced area range for static detection
-            if self.min_contour_area * 1.2 < area < self.max_contour_area * 0.9:
-                x, y, w, h = cv2.boundingRect(contour)
-                
-                # Strict validation for static birds
-                if self._is_valid_static_bird(frame, x, y, w, h, contour):
-                    # Check temporal consistency across multiple frames
-                    if self._is_temporally_consistent_static(x, y, w, h):
-                        aspect_ratio = w / h if h > 0 else 0
-                        confidence = self._calculate_static_confidence(area, aspect_ratio, frame[y:y+h, x:x+w])
-                        
-                        # Balanced threshold for static detection
-                        if confidence > (self.confidence_threshold * 0.9):
-                            detections.append({
-                                'bbox': (x, y, w, h),
-                                'confidence': confidence * 0.9,  # Reduce confidence for static
-                                'centroid': (x + w//2, y + h//2),
-                                'type': 'static'
-                            })
-        
-        return detections
-    
-    def _is_valid_static_bird(self, frame, x, y, w, h, contour):
-        """Strict validation for static bird shapes to avoid shadows"""
-        # Balanced size and aspect ratio checks
-        aspect_ratio = w / h if h > 0 else 0
-        if aspect_ratio < 0.3 or aspect_ratio > 3.0:  # Less restrictive
-            return False
-        
-        # Check if the region is significantly dark (bird-like, not shadow)
-        roi = frame[y:y+h, x:x+w]
-        if roi.size > 0:
-            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) == 3 else roi
-            mean_intensity = np.mean(gray_roi)
-            
-            # Balanced darkness requirement
-            frame_mean = np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-            if mean_intensity > frame_mean * 0.8:  # Moderately darker
-                return False
-            
-            # Check for shadow characteristics (low contrast)
-            roi_std = np.std(gray_roi)
-            if roi_std < 10:  # Less strict texture requirement
-                return False
-        
-        # Balanced solidity check
-        hull = cv2.convexHull(contour)
-        hull_area = cv2.contourArea(hull)
-        if hull_area > 0:
-            solidity = cv2.contourArea(contour) / hull_area
-            if solidity < 0.4:  # Reasonably solid
-                return False
-        
-        # Perimeter-to-area ratio check (shadows tend to be elongated)
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter > 0:
-            compactness = 4 * np.pi * cv2.contourArea(contour) / (perimeter * perimeter)
-            if compactness < 0.2:  # Less strict compactness
-                return False
-        
-        return True
-    
-    def _is_temporally_consistent_static(self, x, y, w, h):
-        """Check if a static detection is consistent across multiple frames"""
-        if len(self.static_frames_buffer) < 3:
-            return False
-        
-        # Check if similar dark regions exist in previous frames
-        current_center = (x + w//2, y + h//2)
-        consistent_count = 0
-        
-        for prev_frame in list(self.static_frames_buffer)[:-1]:  # Exclude current frame
-            gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-            
-            # Check intensity at the same location
-            if (current_center[1] < gray_prev.shape[0] and 
-                current_center[0] < gray_prev.shape[1]):
-                
-                # Sample a small region around the center
-                sample_size = min(w, h, 10)
-                y1 = max(0, current_center[1] - sample_size//2)
-                y2 = min(gray_prev.shape[0], current_center[1] + sample_size//2)
-                x1 = max(0, current_center[0] - sample_size//2)
-                x2 = min(gray_prev.shape[1], current_center[0] + sample_size//2)
-                
-                if y2 > y1 and x2 > x1:
-                    prev_intensity = np.mean(gray_prev[y1:y2, x1:x2])
-                    frame_mean = np.mean(gray_prev)
-                    
-                    # Check if it was also dark in previous frame
-                    if prev_intensity < frame_mean * 0.8:
-                        consistent_count += 1
-        
-        # Require consistency in at least 1 out of previous frames (less strict)
-        return consistent_count >= 1
-    
-    def _calculate_static_confidence(self, area, aspect_ratio, roi):
-        """Conservative confidence calculation for static bird detection"""
-        # Balanced area scoring
-        area_score = max(0, 1.0 - abs(area - 140) / 140)  # Balanced optimal size
-        aspect_score = max(0, 1.0 - abs(aspect_ratio - 1.0) / 2.0)  # More lenient shapes
-        
-        # Balanced texture and intensity analysis
-        texture_score = 0.4  # Moderate default
-        darkness_score = 0.4  # Moderate default
-        
-        if roi.size > 0:
-            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) == 3 else roi
-            
-            # Birds should have moderate texture variation
-            texture_variation = np.std(gray_roi)
-            texture_score = min(1.0, texture_variation / 20.0)  # Moderate requirement
-            
-            # Should be reasonably dark
-            mean_intensity = np.mean(gray_roi)
-            darkness_score = max(0, 1.0 - mean_intensity / 220.0)  # Less strict darkness
-            
-            # Penalty for very uniform regions (shadows)
-            if texture_variation < 8:
-                texture_score *= 0.7
-        
-        # More conservative weighting
-        confidence = (
-            area_score * 0.25 +
-            aspect_score * 0.25 +
-            texture_score * 0.3 +
-            darkness_score * 0.2
-        )
-        
-        # Apply moderate penalty to static detections
-        return confidence * 0.85
-    
-    def _combine_detections(self, motion_detections, static_detections):
-        """Combine motion and static detections, removing duplicates"""
-        all_detections = motion_detections.copy()
-        
-        # Add static detections that don't overlap with motion detections
-        for static_det in static_detections:
-            is_duplicate = False
-            static_center = static_det['centroid']
-            
-            for motion_det in motion_detections:
-                motion_center = motion_det['centroid']
-                distance = np.sqrt(
-                    (static_center[0] - motion_center[0])**2 + 
-                    (static_center[1] - motion_center[1])**2
-                )
-                
-                # If static detection is close to motion detection, skip it
-                if distance < 40:
-                    is_duplicate = True
-                    break
-            
-            if not is_duplicate:
-                all_detections.append(static_det)
-        
-        return all_detections
-    
-    def _calculate_confidence(self, area, aspect_ratio):
-        """Calculate confidence score based on area and aspect ratio"""
-        # Normalize area (assuming birds are typically 100-300 pixels in area)
-        area_score = 1.0 - abs(area - 200) / 200
-        area_score = max(0, min(1, area_score))
-        
-        # Normalize aspect ratio (assuming birds have aspect ratio close to 1)
-        aspect_score = 1.0 - abs(aspect_ratio - 1.0)
-        aspect_score = max(0, min(1, aspect_score))
-        
-        # Combine scores
-        confidence = (area_score * 0.6 + aspect_score * 0.4)
-        return confidence
-    
     def _load_config(self, config_path):
         """Load configuration from JSON file"""
         try:
@@ -555,12 +310,11 @@ class SwiftletCounter:
             print(f"Config file {config_path} not found. Using default parameters.")
             return {}
     
-    def _is_valid_bird_shape(self, contour, area, width, height):
+    def _is_valid_bird_shape(self, area, width, height, hull_area, perimeter):
         """Hard-gate shape validation — rejects non-bird contours before confidence scoring.
 
-        These checks eliminate shadows (low solidity), linear artifacts like cables
-        (low compactness), and scraggly noise (low extent) with near-zero CPU cost.
-        Any contour that fails is dropped immediately — no confidence computed.
+        Accepts pre-computed hull_area and perimeter so convex hull is never
+        computed twice for the same contour.
         """
         if width < 3 or height < 3 or width > 300 or height > 300:
             return False
@@ -571,13 +325,10 @@ class SwiftletCounter:
             return False
 
         # Solidity: bird bodies are convex-ish; shadows have deep concavities
-        hull = cv2.convexHull(contour)
-        hull_area = cv2.contourArea(hull)
         if hull_area > 0 and (area / hull_area) < self.shape_min_solidity:
             return False
 
         # Compactness (circularity): eliminates thin wires, ledge edges
-        perimeter = cv2.arcLength(contour, True)
         if perimeter > 0:
             compactness = 4.0 * math.pi * area / (perimeter * perimeter)
             if compactness < self.shape_min_compactness:
@@ -589,40 +340,6 @@ class SwiftletCounter:
 
         return True
     
-    def _calculate_enhanced_confidence(self, contour, area, width, height, roi):
-        """Swiftlet-optimized confidence calculation"""
-        # Area score - broader range for swiftlets
-        if area < 100:
-            area_score = 0.8  # Small birds get good score
-        elif area < 200:
-            area_score = 1.0  # Optimal size
-        else:
-            area_score = max(0.5, 1.0 - (area - 200) / 300)  # Larger birds penalized less
-        
-        # Aspect ratio score - more lenient
-        aspect_ratio = width / height
-        if 0.5 <= aspect_ratio <= 2.0:
-            aspect_score = 1.0
-        else:
-            aspect_score = max(0.3, 1.0 - abs(aspect_ratio - 1.0) / 3.0)
-        
-        # Compactness score - simplified and more lenient
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter > 0:
-            compactness = 4 * math.pi * area / (perimeter * perimeter)
-            compactness_score = min(1.0, compactness * 2)  # More lenient
-        else:
-            compactness_score = 0.5
-        
-        # Simple weighted combination - focus on area and shape
-        confidence = (
-            area_score * 0.5 +
-            aspect_score * 0.3 +
-            compactness_score * 0.2
-        )
-        
-        return max(0.1, confidence)  # Minimum confidence to avoid zero
-
     def _get_center_box(self, frame_width, frame_height):
         """Create center box based on configurable ratios."""
         box_w = int(frame_width * self.center_box_width_ratio)
@@ -1161,12 +878,7 @@ class SwiftletCounter:
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             
-            # Store previous frame for static detection
-            if self.previous_frame is not None:
-                pass  # Could use for frame differencing if needed
-            self.previous_frame = frame.copy()
-            
-            # Detect birds (motion + static)
+            # Detect birds
             detections = self.detect_birds(frame, mask)
             
             # Update trackers
@@ -1254,42 +966,6 @@ class SwiftletCounter:
         _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
 
         return mask
-    
-    def _apply_temporal_consistency(self, detections):
-        """Relaxed temporal consistency for swiftlets"""
-        # Store current frame detections
-        self.frame_buffer.append(detections)
-        
-        # For first few frames, accept all detections
-        if len(self.frame_buffer) < 3:
-            return detections
-        
-        # More lenient filtering for fast-moving birds
-        consistent_detections = []
-        
-        for detection in detections:
-            # Accept high confidence detections immediately
-            if detection['confidence'] > 0.6:
-                consistent_detections.append(detection)
-                continue
-            
-            # Check for temporal consistency with larger search radius
-            consistency_score = 0
-            for prev_detections in list(self.frame_buffer)[:-1]:
-                for prev_det in prev_detections:
-                    distance = np.sqrt(
-                        (detection['centroid'][0] - prev_det['centroid'][0])**2 + 
-                        (detection['centroid'][1] - prev_det['centroid'][1])**2
-                    )
-                    if distance < 100:  # Larger search radius for fast birds
-                        consistency_score += 1
-                        break
-            
-            # Keep detection if it has consistency or reasonable confidence
-            if consistency_score > 0 or detection['confidence'] > 0.4:
-                consistent_detections.append(detection)
-        
-        return consistent_detections
     
     def _save_statistics(self):
         """Save processing statistics to file"""

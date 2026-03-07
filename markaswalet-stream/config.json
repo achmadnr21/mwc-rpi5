@@ -56,6 +56,6 @@
   "kalman_measurement_noise": 4.0,
 
   "pending_vote_frames": 2,
-  "pending_vote_window": 4,
+  "pending_vote_window": 3,
   "pending_max_distance": 25
 }
