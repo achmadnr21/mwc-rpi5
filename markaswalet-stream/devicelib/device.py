@@ -5,7 +5,7 @@ import requests
 import os
 
 class Device:
-    def __init__(self, API_URL='https://markaswalet-iot.techiro.co.id/api/camera/'):
+    def __init__(self, API_URL='http://46.250.229.47:8081/api/camera/'):
         self.API_URL = API_URL
         self.database_dir = os.path.expanduser('~/localdb')
         self.database_name = 'device.db'

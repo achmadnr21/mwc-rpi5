@@ -14,7 +14,7 @@ GLOBAL_STREAM_IP = '46.250.229.47'
 
 # Set this to a real stream key to bypass the API (for local testing when API is down).
 # Leave as None to use the normal API registration flow.
-LOCAL_TEST_STREAM_KEY = '3RLZ6ZGQpMZ3yxGz'
+LOCAL_TEST_STREAM_KEY = None
 
 # procedure to get stream key
 
@@ -58,7 +58,7 @@ if __name__ == '__main__':
                 print('[OUTER][STREAM_KEY] : Stream Key not granted')
                 continue
             while True:
-                stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey, device_name=device_identity_name, use_test_video=True, test_video_path='/Users/raulilmarajasa/Desktop/Personal/Startup/Techiro/MarkasWalet/IoT Counter Burung Walet/Computer Vision/MarkasWalet-Swiftlets-Detection/swiftlet_counter/rumahburungwalet.mp4')
+                stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey, device_name=device_identity_name, use_test_video=True, test_video_path='/Users/raulilmarajasa/Desktop/Personal/Startup/Techiro/MarkasWalet/IoT Counter Burung Walet/Computer Vision/MarkasWalet-Swiftlets-Detection/swiftlet_counter/rbw-lt2.mp4')
         except Exception as e:
             print(f'Error with pesan\t: {e}')
         time.sleep(5)
