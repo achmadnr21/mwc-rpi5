@@ -1,0 +1,14 @@
+# Computer Vision
+opencv-contrib-python-headless
+
+# Numerical computing
+numpy
+
+# HTTP requests (device registration, API)
+requests
+
+# Raspberry Pi camera
+picamera2
+
+# Raspberry Pi GPIO
+gpiod
