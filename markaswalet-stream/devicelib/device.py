@@ -178,6 +178,29 @@ class Device:
             print(f'[GET_CONFIG] Error: {e}')
         return None
 
+    def report_bird_count(self, count_in: int, count_out: int) -> bool:
+        """POST accumulated bird count delta to API. Returns True on success."""
+        conn = self.local_database_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT ID, password FROM device_data LIMIT 1')
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return False
+        device_id, local_password = row
+        data = {
+            'id': device_id,
+            'password': local_password,
+            'count_in': count_in,
+            'count_out': count_out,
+        }
+        try:
+            response = requests.post(self.API_URL + 'bird-count', json=data, timeout=10)
+            return response.status_code == 201
+        except Exception as e:
+            print(f'[BIRD_COUNT] Error: {e}')
+        return False
+
     def run_process(self):
         status, stream_key = self.regist()
         return status, stream_key

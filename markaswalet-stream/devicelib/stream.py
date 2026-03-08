@@ -14,6 +14,8 @@ from devicelib.device import Device
 
 # How often (seconds) the RPi polls the API for updated config
 CONFIG_POLL_INTERVAL = 60
+# How often (seconds) the RPi reports accumulated bird counts to the API
+BIRD_COUNT_REPORT_INTERVAL = 300  # 5 minutes
 
 TEST_VIDEO_PATH = 'test_video.mp4'  # For testing on non-Raspberry Pi environments
 # import raspberry pi pins to pull up digital pin for relay
@@ -205,6 +207,9 @@ def stream_process(
     # Device object for config polling (reads id/password from local SQLite)
     _device_cfg = Device()
     _last_config_poll = 0.0
+    _last_count_report = 0.0
+    _last_reported_in = 0
+    _last_reported_out = 0
 
     ret, frame_bgr = cap.read()
     if not ret or frame_bgr is None:
@@ -225,6 +230,25 @@ def stream_process(
                         swiftlet_counter.reload_config_from_dict(remote_config)
                 except Exception as _e:
                     print(f'[CONFIG_POLL] Error fetching config: {_e}')
+
+            # Report bird count delta every BIRD_COUNT_REPORT_INTERVAL seconds
+            if _now - _last_count_report >= BIRD_COUNT_REPORT_INTERVAL:
+                _last_count_report = _now
+                current_in = swiftlet_counter.cross_in_to_out
+                current_out = swiftlet_counter.cross_out_to_in
+                delta_in = current_in - _last_reported_in
+                delta_out = current_out - _last_reported_out
+                if delta_in > 0 or delta_out > 0:
+                    try:
+                        success = _device_cfg.report_bird_count(delta_in, delta_out)
+                        if success:
+                            _last_reported_in = current_in
+                            _last_reported_out = current_out
+                            print(f'[BIRD_COUNT] Reported in={delta_in} out={delta_out}')
+                        else:
+                            print(f'[BIRD_COUNT] Failed to report count')
+                    except Exception as _e:
+                        print(f'[BIRD_COUNT] Error: {_e}')
 
             # Turn on relay
             relay_on_time_between(LED_LINE=led_line)
