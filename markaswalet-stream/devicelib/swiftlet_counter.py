@@ -48,6 +48,7 @@ class SwiftletCounter:
         
         # YOLO ONNX detector (optional — falls back to classical CV if not provided)
         self._yolo_net = None
+        self._yolo_model_path     = yolo_model_path  # stored for hot-reload
         self._yolo_input_size     = int(self.config.get('yolo_input_size', 320))
         self._yolo_conf_threshold = self.config.get('yolo_conf_threshold', 0.40)
         self._yolo_nms_threshold  = self.config.get('yolo_nms_threshold', 0.45)
@@ -272,6 +273,16 @@ class SwiftletCounter:
         self.pending_vote_window  = self.config.get('pending_vote_window', 4)
         self.pending_max_distance = self.config.get('pending_max_distance', 25)
         self.center_gate_margin_ratio = max(0.0, min(0.2, self.config.get('center_gate_margin_ratio', 0.03)))
+        # Reload/unload YOLO model based on use_yolo flag
+        use_yolo = self.config.get('use_yolo', True)
+        if use_yolo and self._yolo_model_path and os.path.isfile(self._yolo_model_path):
+            if self._yolo_net is None:
+                self._yolo_net = cv2.dnn.readNetFromONNX(self._yolo_model_path)
+                print(f'[CONFIG] YOLO model loaded: {self._yolo_model_path}')
+        else:
+            if self._yolo_net is not None:
+                self._yolo_net = None
+                print('[CONFIG] YOLO model unloaded — switching to classical CV detection')
         print('[CONFIG] Config hot-reloaded from dict')
 
     def _detect_yolo(self, frame):
