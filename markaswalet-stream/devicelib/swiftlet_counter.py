@@ -47,19 +47,28 @@ class SwiftletCounter:
             self.out = None
         
         # YOLO ONNX detector (optional — falls back to classical CV if not provided)
-        self._yolo_net = None
-        self._yolo_model_path     = yolo_model_path  # stored for hot-reload
+        self._yolo_net  = None   # custom YOLOv8n (swiftlet-trained)
+        self._yolo11n_net = None  # YOLO11n COCO general bird detector
+        self._yolo_model_path = yolo_model_path  # stored for hot-reload
+        # Derive YOLO11n path from same directory as the custom model
+        _yolo_dir = os.path.dirname(os.path.abspath(yolo_model_path)) if yolo_model_path \
+                    else os.path.dirname(os.path.abspath(__file__))
+        self._yolo11n_model_path = os.path.join(_yolo_dir, 'yolo11n_bird.onnx')
         self._yolo_input_size     = int(self.config.get('yolo_input_size', 320))
         self._yolo_conf_threshold = self.config.get('yolo_conf_threshold', 0.40)
         self._yolo_nms_threshold  = self.config.get('yolo_nms_threshold', 0.45)
-        use_yolo = self.config.get('use_yolo', True)
-        if use_yolo and yolo_model_path and os.path.isfile(yolo_model_path):
+        use_yolo        = self.config.get('use_yolo', True)
+        yolo_model_type = self.config.get('yolo_model_type', 'yolov8n')
+        if use_yolo and yolo_model_type == 'yolov8n' and yolo_model_path and os.path.isfile(yolo_model_path):
             self._yolo_net = cv2.dnn.readNetFromONNX(yolo_model_path)
-            print(f'[YOLO] Loaded ONNX model: {yolo_model_path}')
+            print(f'[YOLO] Loaded YOLOv8n (swiftlet): {yolo_model_path}')
+        elif use_yolo and yolo_model_type == 'yolo11n_coco' and os.path.isfile(self._yolo11n_model_path):
+            self._yolo11n_net = cv2.dnn.readNetFromONNX(self._yolo11n_model_path)
+            print(f'[YOLO11n] Loaded COCO bird model: {self._yolo11n_model_path}')
         elif not use_yolo:
             print('[YOLO] use_yolo=False in config — using classical CV detection')
         else:
-            print('[YOLO] No ONNX model — using classical CV detection')
+            print('[YOLO] No ONNX model found — using classical CV detection')
 
         # Background subtractor
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows=True)
@@ -164,9 +173,11 @@ class SwiftletCounter:
         self._fps_times = deque(maxlen=30)
         
     def detect_birds(self, frame, mask):
-        """Bird detection — uses YOLO ONNX when available, classical CV otherwise."""
+        """Bird detection — routes to active model: YOLOv8n, YOLO11n COCO, or classical CV."""
         if self._yolo_net is not None:
             return self._detect_yolo(frame)
+        if self._yolo11n_net is not None:
+            return self._detect_yolo11n_coco(frame)
         return self._detect_motion_birds(frame, mask)
 
     # ── Color preprocessing ─────────────────────────────────────────────────
@@ -273,16 +284,30 @@ class SwiftletCounter:
         self.pending_vote_window  = self.config.get('pending_vote_window', 4)
         self.pending_max_distance = self.config.get('pending_max_distance', 25)
         self.center_gate_margin_ratio = max(0.0, min(0.2, self.config.get('center_gate_margin_ratio', 0.03)))
-        # Reload/unload YOLO model based on use_yolo flag
-        use_yolo = self.config.get('use_yolo', True)
-        if use_yolo and self._yolo_model_path and os.path.isfile(self._yolo_model_path):
-            if self._yolo_net is None:
+        # Hot-reload model selection
+        use_yolo        = self.config.get('use_yolo', True)
+        yolo_model_type = self.config.get('yolo_model_type', 'yolov8n')
+        if use_yolo and yolo_model_type == 'yolov8n':
+            if self._yolo_net is None and self._yolo_model_path and os.path.isfile(self._yolo_model_path):
                 self._yolo_net = cv2.dnn.readNetFromONNX(self._yolo_model_path)
-                print(f'[CONFIG] YOLO model loaded: {self._yolo_model_path}')
-        else:
+                print(f'[CONFIG] YOLOv8n (swiftlet) loaded')
+            if self._yolo11n_net is not None:
+                self._yolo11n_net = None
+                print('[CONFIG] YOLO11n unloaded')
+        elif use_yolo and yolo_model_type == 'yolo11n_coco':
+            if self._yolo11n_net is None and os.path.isfile(self._yolo11n_model_path):
+                self._yolo11n_net = cv2.dnn.readNetFromONNX(self._yolo11n_model_path)
+                print(f'[CONFIG] YOLO11n COCO bird model loaded')
             if self._yolo_net is not None:
                 self._yolo_net = None
-                print('[CONFIG] YOLO model unloaded — switching to classical CV detection')
+                print('[CONFIG] YOLOv8n unloaded')
+        else:  # contour
+            if self._yolo_net is not None:
+                self._yolo_net = None
+                print('[CONFIG] YOLOv8n unloaded → classical CV')
+            if self._yolo11n_net is not None:
+                self._yolo11n_net = None
+                print('[CONFIG] YOLO11n unloaded → classical CV')
         print('[CONFIG] Config hot-reloaded from dict')
 
     def _detect_yolo(self, frame):
@@ -329,7 +354,53 @@ class SwiftletCounter:
                 'type': 'yolo',
             })
         return detections
-    
+
+    def _detect_yolo11n_coco(self, frame):
+        """YOLO11n COCO inference via cv2.dnn — filters for bird class (COCO class 14).
+
+        COCO YOLO11n ONNX output layout: (1, 84, num_anchors)
+          rows 0-3  : cx, cy, w, h (normalised to input size)
+          rows 4-83 : per-class scores for all 80 COCO classes
+          bird = class index 14 → output row 4+14 = 18
+        """
+        BIRD_CLASS_IDX = 14
+        h, w = frame.shape[:2]
+        sz = self._yolo_input_size
+        blob = cv2.dnn.blobFromImage(frame, 1 / 255.0, (sz, sz), swapRB=True, crop=False)
+        self._yolo11n_net.setInput(blob)
+        raw = self._yolo11n_net.forward()   # (1, 84, num_anchors)
+
+        out = raw[0]                         # (84, num_anchors)
+        if out.shape[0] == 84:               # (84, N) → transpose to (N, 84)
+            out = out.T
+
+        boxes, scores = [], []
+        sx, sy = w / sz, h / sz
+        for row in out:
+            conf = float(row[4 + BIRD_CLASS_IDX])
+            if conf < self._yolo_conf_threshold:
+                continue
+            cx, cy, bw, bh = row[0] * sx, row[1] * sy, row[2] * sx, row[3] * sy
+            x1 = int(cx - bw / 2)
+            y1 = int(cy - bh / 2)
+            boxes.append([x1, y1, int(bw), int(bh)])
+            scores.append(conf)
+
+        if not boxes:
+            return []
+
+        indices = cv2.dnn.NMSBoxes(boxes, scores, self._yolo_conf_threshold, self._yolo_nms_threshold)
+        detections = []
+        for i in (indices.flatten() if len(indices) else []):
+            x, y, bw, bh = boxes[i]
+            detections.append({
+                'bbox': (x, y, bw, bh),
+                'confidence': scores[i],
+                'centroid': (x + bw // 2, y + bh // 2),
+                'type': 'yolo11n_coco',
+            })
+        return detections
+
     def _detect_motion_birds(self, frame, mask):
         """Shape-aware motion detection with 5-feature confidence scoring.
 
