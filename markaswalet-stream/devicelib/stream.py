@@ -2,7 +2,9 @@
 import numpy as np
 import cv2
 # from picamera2 import Picamera2  # Raspberry Pi specific
-from datetime import datetime
+from datetime import datetime, date
+import zoneinfo
+_WIB = zoneinfo.ZoneInfo('Asia/Jakarta')
 import time
 import subprocess
 import os
@@ -29,7 +31,7 @@ def relay_on_time_between(LED_LINE = None):
         return
     start_time = 17
     end_time = 5
-    current_time = datetime.now().hour
+    current_time = datetime.now(_WIB).hour
     if current_time >= start_time or current_time <= end_time:
         LED_LINE.set_value(0)
     else:
@@ -210,6 +212,7 @@ def stream_process(
     _last_count_report = 0.0
     _last_reported_in = 0
     _last_reported_out = 0
+    _current_date = datetime.now(_WIB).date()  # Track WIB date for daily counter reset
 
     ret, frame_bgr = cap.read()
     if not ret or frame_bgr is None:
@@ -220,8 +223,18 @@ def stream_process(
         print('Outer Image Capture Success')
     try:
         while True:
-            # Poll API for updated config every CONFIG_POLL_INTERVAL seconds
+            # Daily counter reset at midnight
             _now = time.time()
+            _today = datetime.now(_WIB).date()
+            if _today != _current_date:
+                _current_date = _today
+                swiftlet_counter.cross_in_to_out = 0
+                swiftlet_counter.cross_out_to_in = 0
+                _last_reported_in = 0
+                _last_reported_out = 0
+                print(f'[DAILY_RESET] Counters reset for new day: {_today}')
+
+            # Poll API for updated config every CONFIG_POLL_INTERVAL seconds
             if _now - _last_config_poll >= CONFIG_POLL_INTERVAL:
                 _last_config_poll = _now
                 try:
@@ -271,7 +284,7 @@ def stream_process(
             processed_frame = swiftlet_counter.process_frame(frame_bgr)
 
             # Add timestamp overlay (optional, can be moved to draw_annotations)
-            current_time = datetime.now().strftime("%H:%M:%S")
+            current_time = datetime.now(_WIB).strftime("%H:%M:%S")
             cv2.putText(processed_frame, current_time, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA) # red
 
             try:
