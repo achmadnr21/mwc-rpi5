@@ -17,7 +17,7 @@ from devicelib.device import Device
 # How often (seconds) the RPi polls the API for updated config
 CONFIG_POLL_INTERVAL = 60
 # How often (seconds) the RPi reports accumulated bird counts to the API
-BIRD_COUNT_REPORT_INTERVAL = 300  # 5 minutes
+BIRD_COUNT_REPORT_INTERVAL = 30  # 30 seconds for near-realtime statistics
 
 TEST_VIDEO_PATH = 'test_video.mp4'  # For testing on non-Raspberry Pi environments
 # import raspberry pi pins to pull up digital pin for relay
@@ -260,17 +260,21 @@ def stream_process(
                 current_out = swiftlet_counter.cross_out_to_in
                 delta_in = current_in - _last_reported_in
                 delta_out = current_out - _last_reported_out
-                if delta_in > 0 or delta_out > 0:
-                    try:
-                        success = _device_cfg.report_bird_count(delta_in, delta_out, swiftlet_counter.crossing_count)
-                        if success:
+                try:
+                    # Always report crossing_count so DB stays current (for live stats + restart restore).
+                    # Only create a bird_count record on the backend when delta > 0.
+                    success = _device_cfg.report_bird_count(delta_in, delta_out, swiftlet_counter.crossing_count)
+                    if success:
+                        if delta_in > 0 or delta_out > 0:
                             _last_reported_in = current_in
                             _last_reported_out = current_out
                             print(f'[BIRD_COUNT] Reported in={delta_in} out={delta_out} crossing={swiftlet_counter.crossing_count}')
                         else:
-                            print(f'[BIRD_COUNT] Failed to report count')
-                    except Exception as _e:
-                        print(f'[BIRD_COUNT] Error: {_e}')
+                            print(f'[BIRD_COUNT] Updated crossing={swiftlet_counter.crossing_count}')
+                    else:
+                        print(f'[BIRD_COUNT] Failed to report')
+                except Exception as _e:
+                    print(f'[BIRD_COUNT] Error: {_e}')
 
             # Turn on relay
             relay_on_time_between(LED_LINE=led_line)
