@@ -210,9 +210,17 @@ def stream_process(
     _device_cfg = Device()
     _last_config_poll = 0.0
     _last_count_report = 0.0
-    _last_reported_in = 0
-    _last_reported_out = 0
     _current_date = datetime.now(_WIB).date()  # Track WIB date for daily counter reset
+
+    # Restore today's accumulated counts so the counter does not reset to 0 on restart
+    _today_saved = _device_cfg.get_today_count()
+    _last_reported_in  = _today_saved['total_in']
+    _last_reported_out = _today_saved['total_out']
+    # Align session counters to the restored baseline so delta calculation stays correct
+    swiftlet_counter.cross_in_to_out  = _last_reported_in
+    swiftlet_counter.cross_out_to_in  = _last_reported_out
+    swiftlet_counter.crossing_count   = _today_saved['crossing_count']
+    print(f'[RESTORE] crossing_count={swiftlet_counter.crossing_count} total_in={_last_reported_in} total_out={_last_reported_out}')
 
     ret, frame_bgr = cap.read()
     if not ret or frame_bgr is None:
@@ -228,9 +236,10 @@ def stream_process(
             _today = datetime.now(_WIB).date()
             if _today != _current_date:
                 _current_date = _today
-                swiftlet_counter.cross_in_to_out = 0
-                swiftlet_counter.cross_out_to_in = 0
-                _last_reported_in = 0
+                swiftlet_counter.cross_in_to_out  = 0
+                swiftlet_counter.cross_out_to_in  = 0
+                swiftlet_counter.crossing_count   = 0
+                _last_reported_in  = 0
                 _last_reported_out = 0
                 print(f'[DAILY_RESET] Counters reset for new day: {_today}')
 
@@ -253,11 +262,11 @@ def stream_process(
                 delta_out = current_out - _last_reported_out
                 if delta_in > 0 or delta_out > 0:
                     try:
-                        success = _device_cfg.report_bird_count(delta_in, delta_out)
+                        success = _device_cfg.report_bird_count(delta_in, delta_out, swiftlet_counter.crossing_count)
                         if success:
                             _last_reported_in = current_in
                             _last_reported_out = current_out
-                            print(f'[BIRD_COUNT] Reported in={delta_in} out={delta_out}')
+                            print(f'[BIRD_COUNT] Reported in={delta_in} out={delta_out} crossing={swiftlet_counter.crossing_count}')
                         else:
                             print(f'[BIRD_COUNT] Failed to report count')
                     except Exception as _e:

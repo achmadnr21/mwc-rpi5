@@ -178,8 +178,8 @@ class Device:
             print(f'[GET_CONFIG] Error: {e}')
         return None
 
-    def report_bird_count(self, count_in: int, count_out: int) -> bool:
-        """POST accumulated bird count delta to API. Returns True on success."""
+    def report_bird_count(self, count_in: int, count_out: int, crossing_count: int = 0) -> bool:
+        """POST accumulated bird count delta + current crossing_count to API. Returns True on success."""
         conn = self.local_database_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT ID, password FROM device_data LIMIT 1')
@@ -193,6 +193,7 @@ class Device:
             'password': local_password,
             'count_in': count_in,
             'count_out': count_out,
+            'crossing_count': crossing_count,
         }
         try:
             response = requests.post(self.API_URL + 'bird-count', json=data, timeout=10)
@@ -200,6 +201,34 @@ class Device:
         except Exception as e:
             print(f'[BIRD_COUNT] Error: {e}')
         return False
+
+    def get_today_count(self) -> dict:
+        """Fetch today's accumulated counts + last crossing_count from API.
+        Returns dict with total_in, total_out, crossing_count (all int, default 0)."""
+        conn = self.local_database_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT ID, password FROM device_data LIMIT 1')
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return {'total_in': 0, 'total_out': 0, 'crossing_count': 0}
+        device_id, local_password = row
+        try:
+            response = requests.get(
+                self.API_URL + 'bird-count-today',
+                params={'id': device_id, 'password': local_password},
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    'total_in':       int(data.get('total_in', 0)),
+                    'total_out':      int(data.get('total_out', 0)),
+                    'crossing_count': int(data.get('crossing_count', 0)),
+                }
+        except Exception as e:
+            print(f'[GET_TODAY_COUNT] Error: {e}')
+        return {'total_in': 0, 'total_out': 0, 'crossing_count': 0}
 
     def run_process(self):
         status, stream_key = self.regist()
