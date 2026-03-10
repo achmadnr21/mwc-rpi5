@@ -58,7 +58,10 @@ if __name__ == '__main__':
                 print('[OUTER][STREAM_KEY] : Stream Key not granted')
                 continue
             while True:
+                # Live Camera
                 stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey, device_name=device_identity_name)
+                # Test Video
+                # stream_process(stream_ip=GLOBAL_STREAM_IP, stream_key=strkey, device_name=device_identity_name, use_test_video=True, test_video_path='/Users/raulilmarajasa/Desktop/Personal/Startup/Techiro/MarkasWalet/IoT Counter Burung Walet/Computer Vision/MarkasWalet-Swiftlets-Detection/swiftlet_counter/rumahburungwalet.mp4')
         except Exception as e:
             print(f'Error with pesan\t: {e}')
         time.sleep(5)
