@@ -1,32 +1,28 @@
 # in this file, we define the Stream procedure to perform the streaming process
 import numpy as np
 import cv2
-# from picamera2 import Picamera2  # Raspberry Pi specific
+from picamera2 import Picamera2
 from datetime import datetime, date
 import zoneinfo
 _WIB = zoneinfo.ZoneInfo('Asia/Jakarta')
 import time
 import subprocess
 import os
-# import devicelib.detector as detector
 
 # Import SwiftletCounter for frame processing
 from devicelib.swiftlet_counter import SwiftletCounter
 from devicelib.device import Device
+
+import gpiod
 
 # How often (seconds) the RPi polls the API for updated config
 CONFIG_POLL_INTERVAL = 60
 # How often (seconds) the RPi reports accumulated bird counts to the API
 BIRD_COUNT_REPORT_INTERVAL = 30  # 30 seconds for near-realtime statistics
 
-TEST_VIDEO_PATH = 'test_video.mp4'  # For testing on non-Raspberry Pi environments
-# import raspberry pi pins to pull up digital pin for relay
-
-# import gpiod  # Raspberry Pi specific
-
-IRLED= 16
+IRLED = 16
 # start time default is 17:00 and turn it off next day at 5:00
-def relay_on_time_between(LED_LINE = None):
+def relay_on_time_between(LED_LINE=None):
     if LED_LINE is None:
         return
     start_time = 17
@@ -44,9 +40,10 @@ VIDEO_BITRATE = '280k'
 VIDEO_MAXRATE = '320k'
 VIDEO_BUFSIZE = '640k'
 
-# Initialize the PiCamera2
-# picam2 = Picamera2()  # Raspberry Pi specific
-# picam2.configure(picam2.create_preview_configuration(main={"format": 'XRGB8888', "size": IMSIZE}))
+# Initialize PiCamera2
+picam2 = Picamera2()
+picam2.configure(picam2.create_preview_configuration(main={"format": 'XRGB8888', "size": IMSIZE}))
+
 
 # Initialize SwiftletCounter for streaming (frame-by-frame)
 class StreamingSwiftletCounter(SwiftletCounter):
@@ -99,14 +96,11 @@ def stream_process(
     stream_ip='103.193.179.252',
     stream_key='mwcdef',
     device_name='markaswalet-capture-device',
-    use_test_video=False,
-    test_video_path=TEST_VIDEO_PATH
 ):
 
     if stream_key == 'mwcdef' or stream_key is None:
         print('Exiting from the program')
         exit(0)
-    
 
     video_encoder = _select_video_encoder()
     print(f'Using FFmpeg video encoder: {video_encoder}')
@@ -147,57 +141,43 @@ def stream_process(
         '-fflags', 'nobuffer',
         '-f', 'rawvideo',
         '-pix_fmt', 'bgr24',
-        '-s', f'{IMSIZE[0]}x{IMSIZE[1]}', 
-        '-r', str(FPS), 
-        '-i', '-', 
+        '-s', f'{IMSIZE[0]}x{IMSIZE[1]}',
+        '-r', str(FPS),
+        '-i', '-',
     ] + video_encode_args + [
         '-flags', 'low_delay',
         '-an',
         '-flush_packets', '1',
         '-muxdelay', '0',
         '-muxpreload', '0',
-        '-f', 'flv',  # format for RTMP
+        '-f', 'flv',
         '-rtmp_live', 'live',
-        f'rtmp://{stream_ip}:1935/markaswalet-live/{stream_key}'  # RTMP server URL
+        f'rtmp://{stream_ip}:1935/markaswalet-live/{stream_key}'
     ]
 
-    # Start the camera
     print('\033c')
     print(f'====================== START STREAM  =============================')
     print(f'Start Streaming with stream id = {stream_key}')
     print(f'rtmp://{stream_ip}:1935/markaswalet-live/{stream_key}')
     print(f'====================== START CAMERA  =============================')
 
-    # picam2.start()  # Raspberry Pi specific
-    if use_test_video:
-        cap = cv2.VideoCapture(test_video_path)
-        print(f'Input source: test video -> {test_video_path}')
-    else:
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, IMSIZE[0])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, IMSIZE[1])
-        cap.set(cv2.CAP_PROP_FPS, FPS)
-        print('Input source: local camera (cv2.VideoCapture(0))')
+    picam2.start()
+    print('Input source: PiCamera2')
 
-    if not cap.isOpened():
-        if use_test_video:
-            print(f'Cannot open test video: {test_video_path}')
-        else:
-            print('Cannot open local camera (cv2.VideoCapture(0))')
-        return
     print(f'====================== START SENDING =============================')
-    # setups ir led for night and day
-    
-    # chip = gpiod.Chip('gpiochip4')  # Raspberry Pi specific
-    # led_line = chip.get_line(IRLED)
-    # led_line.request(consumer="LED",
-    # type=gpiod.LINE_REQ_DIR_OUT,
-    # flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP)
-    led_line = None
-    
+
+    # Setup IR LED for night/day switching
+    chip = gpiod.Chip('gpiochip4')
+    led_line = chip.get_line(IRLED)
+    led_line.request(
+        consumer="LED",
+        type=gpiod.LINE_REQ_DIR_OUT,
+        flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP
+    )
+
     # Start ffmpeg subprocess
     ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE, bufsize=0)
-    # take picture and save it
+
     # Auto-detect ONNX model in same directory as this file
     _here = os.path.dirname(os.path.abspath(__file__))
     _onnx_path = os.path.join(os.path.dirname(_here), 'swiftlet_yolov8n.onnx')
@@ -206,7 +186,7 @@ def stream_process(
     # Initialize SwiftletCounter for streaming
     swiftlet_counter = StreamingSwiftletCounter(device_name=device_name, yolo_model_path=yolo_path)
 
-    # Device object for config polling (reads id/password from local SQLite)
+    # Device object for config polling
     _device_cfg = Device()
     _last_config_poll = 0.0
     _last_count_report = 0.0
@@ -216,22 +196,23 @@ def stream_process(
     _today_saved = _device_cfg.get_today_count()
     _last_reported_in  = _today_saved['total_in']
     _last_reported_out = _today_saved['total_out']
-    # Align session counters to the restored baseline so delta calculation stays correct
     swiftlet_counter.cross_in_to_out  = _last_reported_in
     swiftlet_counter.cross_out_to_in  = _last_reported_out
     swiftlet_counter.crossing_count   = _today_saved['crossing_count']
     print(f'[RESTORE] crossing_count={swiftlet_counter.crossing_count} total_in={_last_reported_in} total_out={_last_reported_out}')
 
-    ret, frame_bgr = cap.read()
-    if not ret or frame_bgr is None:
+    # Initial test capture
+    frame = picam2.capture_array()
+    if frame is None:
         print('Outer Image Capture Error')
     else:
-        frame_bgr = cv2.resize(frame_bgr, IMSIZE)
-        frame_bgr = np.asarray(frame_bgr, dtype=np.uint8)
+        frame_bgr = np.asarray(frame[:, :, :3], dtype=np.uint8)
+        frame_bgr = cv2.flip(frame_bgr, -1)
         print('Outer Image Capture Success')
+
     try:
         while True:
-            # Daily counter reset at midnight
+            # Daily counter reset at midnight (WIB)
             _now = time.time()
             _today = datetime.now(_WIB).date()
             if _today != _current_date:
@@ -256,17 +237,15 @@ def stream_process(
             # Report bird count delta every BIRD_COUNT_REPORT_INTERVAL seconds
             if _now - _last_count_report >= BIRD_COUNT_REPORT_INTERVAL:
                 _last_count_report = _now
-                current_in = swiftlet_counter.cross_in_to_out
+                current_in  = swiftlet_counter.cross_in_to_out
                 current_out = swiftlet_counter.cross_out_to_in
-                delta_in = current_in - _last_reported_in
-                delta_out = current_out - _last_reported_out
+                delta_in    = current_in  - _last_reported_in
+                delta_out   = current_out - _last_reported_out
                 try:
-                    # Always report crossing_count so DB stays current (for live stats + restart restore).
-                    # Only create a bird_count record on the backend when delta > 0.
                     success = _device_cfg.report_bird_count(delta_in, delta_out, swiftlet_counter.crossing_count)
                     if success:
                         if delta_in > 0 or delta_out > 0:
-                            _last_reported_in = current_in
+                            _last_reported_in  = current_in
                             _last_reported_out = current_out
                             print(f'[BIRD_COUNT] Reported in={delta_in} out={delta_out} crossing={swiftlet_counter.crossing_count}')
                         else:
@@ -276,29 +255,24 @@ def stream_process(
                 except Exception as _e:
                     print(f'[BIRD_COUNT] Error: {_e}')
 
-            # Turn on relay
+            # Turn on relay (IR LED) based on time-of-day
             relay_on_time_between(LED_LINE=led_line)
-            # Capture video frame
-            ret, frame_bgr = cap.read()
-            if not ret or frame_bgr is None:
-                if use_test_video:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    ret, frame_bgr = cap.read()
-                    if not ret or frame_bgr is None:
-                        print('Test video loop failed to read frame')
-                        break
-                else:
-                    break
 
-            frame_bgr = cv2.resize(frame_bgr, IMSIZE)
-            frame_bgr = np.asarray(frame_bgr, dtype=np.uint8)
+            # Capture frame from PiCamera2
+            # XRGB8888: channels are [B, G, R, X] on RPi (little-endian) → take first 3 = BGR
+            frame = picam2.capture_array()
+            if frame is None:
+                break
+
+            frame_bgr = np.asarray(frame[:, :, :3], dtype=np.uint8)
+            frame_bgr = cv2.flip(frame_bgr, -1)  # Rotate 180° for upside-down mounted camera
 
             # Process frame with SwiftletCounter (detect, annotate)
             processed_frame = swiftlet_counter.process_frame(frame_bgr)
 
-            # Add timestamp overlay (optional, can be moved to draw_annotations)
+            # Timestamp overlay
             current_time = datetime.now(_WIB).strftime("%H:%M:%S")
-            cv2.putText(processed_frame, current_time, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA) # red
+            cv2.putText(processed_frame, current_time, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
 
             try:
                 ffmpeg.stdin.write(processed_frame.tobytes())
@@ -310,14 +284,11 @@ def stream_process(
         print("Streaming stopped by user")
 
     finally:
-        # Clean up
         print(f'====================== STREAM ERROR        =============================')
         ffmpeg.stdin.close()
         ffmpeg.wait()
-        cap.release()
-        # picam2.stop()  # Raspberry Pi specific
-        # led_line.release()  # Raspberry Pi specific
+        picam2.stop()
+        led_line.release()
+
     print(f'====================== RE-STARTING PROCESS =============================\n\n\n')
     time.sleep(5)
-    
-    
