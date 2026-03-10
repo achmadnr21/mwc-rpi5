@@ -49,6 +49,8 @@ class SwiftletCounter:
         # YOLO ONNX detector (optional — falls back to classical CV if not provided)
         self._yolo_net  = None   # custom YOLOv8n (swiftlet-trained)
         self._yolo11n_net = None  # YOLO11n COCO general bird detector
+        self._use_contour_motion = False  # pure motion+contour model (no shape gates)
+        self._prev_gray = None  # previous grayscale frame for frame differencing
         self._yolo_model_path = yolo_model_path  # stored for hot-reload
         # Derive YOLO11n path from same directory as the custom model
         _yolo_dir = os.path.dirname(os.path.abspath(yolo_model_path)) if yolo_model_path \
@@ -65,6 +67,9 @@ class SwiftletCounter:
         elif use_yolo and yolo_model_type == 'yolo11n_coco' and os.path.isfile(self._yolo11n_model_path):
             self._yolo11n_net = cv2.dnn.readNetFromONNX(self._yolo11n_model_path)
             print(f'[YOLO11n] Loaded COCO bird model: {self._yolo11n_model_path}')
+        elif yolo_model_type == 'contour_motion':
+            self._use_contour_motion = True
+            print('[CV] Contour Motion model active — motion+blob detection, no shape gates')
         elif not use_yolo:
             print('[YOLO] use_yolo=False in config — using classical CV detection')
         else:
@@ -95,6 +100,10 @@ class SwiftletCounter:
         self.min_contour_area = self.config.get('min_contour_area', 50)
         self.max_contour_area = self.config.get('max_contour_area', 500)
         self.confidence_threshold = self.config.get('confidence_threshold', 0.5)
+        # Contour Motion model params (tuned for tiny swiftlet blobs)
+        self.cm_min_area       = self.config.get('cm_min_area', 12)
+        self.cm_max_area       = self.config.get('cm_max_area', 700)
+        self.cm_diff_threshold = self.config.get('cm_diff_threshold', 12)
         self.display_confidence_threshold = self.config.get('display_confidence_threshold', self.confidence_threshold)
         self.display_confidence_threshold = max(0.0, min(1.0, self.display_confidence_threshold))
         self.tracker_max_distance = self.config.get('tracker_max_distance', 70)
@@ -173,11 +182,13 @@ class SwiftletCounter:
         self._fps_times = deque(maxlen=30)
         
     def detect_birds(self, frame, mask):
-        """Bird detection — routes to active model: YOLOv8n, YOLO11n COCO, or classical CV."""
+        """Bird detection — routes to active model: YOLOv8n, YOLO11n COCO, Contour Motion, or classical CV."""
         if self._yolo_net is not None:
             return self._detect_yolo(frame)
         if self._yolo11n_net is not None:
             return self._detect_yolo11n_coco(frame)
+        if self._use_contour_motion:
+            return self._detect_contour_motion(frame, mask)
         return self._detect_motion_birds(frame, mask)
 
     # ── Color preprocessing ─────────────────────────────────────────────────
@@ -276,6 +287,9 @@ class SwiftletCounter:
         self.conf_w_darkness    = self.config.get('confidence_weight_darkness', 0.20)
         self.nms_iou_threshold  = self.config.get('nms_iou_threshold', 0.10)
         self.nms_merge_distance = self.config.get('nms_merge_distance', 20)
+        self.cm_min_area        = self.config.get('cm_min_area', 12)
+        self.cm_max_area        = self.config.get('cm_max_area', 700)
+        self.cm_diff_threshold  = self.config.get('cm_diff_threshold', 12)
         self.use_kalman_filter  = self.config.get('use_kalman_filter', True)
         self.kalman_pn_pos      = float(self.config.get('kalman_process_noise_pos', 1.0))
         self.kalman_pn_vel      = float(self.config.get('kalman_process_noise_vel', 4.0))
@@ -294,6 +308,7 @@ class SwiftletCounter:
             if self._yolo11n_net is not None:
                 self._yolo11n_net = None
                 print('[CONFIG] YOLO11n unloaded')
+            self._use_contour_motion = False
         elif use_yolo and yolo_model_type == 'yolo11n_coco':
             if self._yolo11n_net is None and os.path.isfile(self._yolo11n_model_path):
                 self._yolo11n_net = cv2.dnn.readNetFromONNX(self._yolo11n_model_path)
@@ -301,13 +316,26 @@ class SwiftletCounter:
             if self._yolo_net is not None:
                 self._yolo_net = None
                 print('[CONFIG] YOLOv8n unloaded')
-        else:  # contour
+            self._use_contour_motion = False
+        elif yolo_model_type == 'contour_motion':
+            if self._yolo_net is not None:
+                self._yolo_net = None
+                print('[CONFIG] YOLOv8n unloaded → Contour Motion')
+            if self._yolo11n_net is not None:
+                self._yolo11n_net = None
+                print('[CONFIG] YOLO11n unloaded → Contour Motion')
+            if not self._use_contour_motion:
+                self._use_contour_motion = True
+                self._prev_gray = None  # reset frame diff on model switch
+                print('[CONFIG] Contour Motion model activated')
+        else:  # contour (classical shape-based)
             if self._yolo_net is not None:
                 self._yolo_net = None
                 print('[CONFIG] YOLOv8n unloaded → classical CV')
             if self._yolo11n_net is not None:
                 self._yolo11n_net = None
                 print('[CONFIG] YOLO11n unloaded → classical CV')
+            self._use_contour_motion = False
         print('[CONFIG] Config hot-reloaded from dict')
 
     def _detect_yolo(self, frame):
@@ -443,6 +471,58 @@ class SwiftletCounter:
 
         # Merge fragments from the same bird before returning
         return self._merge_detections_nms(raw)
+
+    def _detect_contour_motion(self, frame, mask):
+        """Motion-only detection optimized for tiny, fast-moving swiftlets.
+
+        No shape validation at all — any moving blob within the configured
+        area range is treated as a bird candidate.  The MOG2 mask is combined
+        with a raw frame-difference mask for extra sensitivity, then morphology
+        cleans up salt-and-pepper noise before contour extraction.
+
+        Config keys:
+          cm_min_area       — minimum blob area (default 12 px²)
+          cm_max_area       — maximum blob area (default 700 px²)
+          cm_diff_threshold — pixel-level diff threshold for frame diff (default 12)
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Combine MOG2 mask with frame difference for extra motion emphasis
+        combined = mask.copy()
+        if self._prev_gray is not None:
+            diff = cv2.absdiff(self._prev_gray, gray)
+            _, diff_mask = cv2.threshold(diff, self.cm_diff_threshold, 255, cv2.THRESH_BINARY)
+            combined = cv2.bitwise_or(combined, diff_mask)
+        self._prev_gray = gray
+
+        # Morphological cleanup: open removes isolated noise pixels, dilate bridges
+        # nearby blobs that belong to the same tiny bird
+        motion_mask = cv2.morphologyEx(combined, cv2.MORPH_OPEN, self.morph_kernel)
+        motion_mask = cv2.dilate(motion_mask, self.morph_kernel, iterations=2)
+
+        contours, _ = cv2.findContours(motion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        detections = []
+
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if not (self.cm_min_area < area < self.cm_max_area):
+                continue
+
+            x, y, w, h = cv2.boundingRect(contour)
+
+            # Confidence: peak in the middle of the expected area range, fades toward edges
+            mid_area = (self.cm_min_area + self.cm_max_area) / 2.0
+            span     = (self.cm_max_area - self.cm_min_area) / 2.0
+            conf = max(0.55, 1.0 - 0.45 * abs(area - mid_area) / max(1.0, span))
+
+            detections.append({
+                'bbox':       (x, y, w, h),
+                'confidence': conf,
+                'centroid':   (x + w // 2, y + h // 2),
+                'type':       'contour_motion',
+            })
+
+        return self._merge_detections_nms(detections)
 
     def _score_shape_features(self, area, w, h, gray_roi, frame_mean, hull_area, perimeter):
         """Compute 5 normalized [0,1] shape feature scores for a contour.
