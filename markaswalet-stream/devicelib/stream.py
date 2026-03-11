@@ -10,6 +10,8 @@ import subprocess
 import os
 import logging
 import traceback
+import threading
+import io
 
 # Import SwiftletCounter for frame processing
 from devicelib.swiftlet_counter import SwiftletCounter
@@ -227,11 +229,37 @@ def stream_process(
         logger.debug(traceback.format_exc())
         led_line = None
 
-    # Start ffmpeg subprocess
+    # Start ffmpeg subprocess — capture stderr so we can log why it dies
     logger.info('[FFMPEG] Launching FFmpeg subprocess…')
+    _ffmpeg_stderr_buf = io.StringIO()
+
+    def _drain_ffmpeg_stderr(proc: subprocess.Popen, buf: io.StringIO):
+        """Background thread: drain FFmpeg stderr line-by-line and log each line."""
+        try:
+            for line in proc.stderr:
+                line = line.strip()
+                if line:
+                    logger.warning(f'[FFMPEG STDERR] {line}')
+                    buf.write(line + '\n')
+        except Exception:
+            pass
+
     try:
-        ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE, bufsize=0)
+        ffmpeg = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,          # stderr lines as str
+            bufsize=0
+        )
         logger.info(f'[FFMPEG] Process PID: {ffmpeg.pid}')
+        _stderr_thread = threading.Thread(
+            target=_drain_ffmpeg_stderr,
+            args=(ffmpeg, _ffmpeg_stderr_buf),
+            daemon=True,
+            name='ffmpeg-stderr'
+        )
+        _stderr_thread.start()
     except Exception as e:
         logger.critical(f'[FFMPEG] Failed to start FFmpeg: {e}')
         logger.critical(traceback.format_exc())
@@ -387,7 +415,24 @@ def stream_process(
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
 
             try:
+                # Check if FFmpeg already died before attempting to write
+                rc = ffmpeg.poll()
+                if rc is not None:
+                    stderr_tail = _ffmpeg_stderr_buf.getvalue()[-2000:]
+                    logger.error(
+                        f'[FFMPEG] Process exited early with code {rc} on frame #{frame_counter}.'
+                        f' Last stderr:\n{stderr_tail or "(empty)"}'
+                    )
+                    break
                 ffmpeg.stdin.write(processed_frame.tobytes())
+            except BrokenPipeError:
+                rc = ffmpeg.poll()
+                stderr_tail = _ffmpeg_stderr_buf.getvalue()[-2000:]
+                logger.error(
+                    f'[FFMPEG] BrokenPipeError on frame #{frame_counter} '
+                    f'(exit code {rc}). Last stderr:\n{stderr_tail or "(empty)"}'
+                )
+                break
             except Exception as e:
                 logger.error(f'[FFMPEG] stdin write failed on frame #{frame_counter}: {e}')
                 logger.debug(traceback.format_exc())
@@ -409,10 +454,17 @@ def stream_process(
         logger.info('[STREAM] Cleaning up resources…')
         try:
             ffmpeg.stdin.close()
-            ffmpeg.wait()
-            logger.info('[FFMPEG] FFmpeg process terminated')
-        except Exception as e:
-            logger.warning(f'[FFMPEG] Error during cleanup: {e}')
+        except Exception:
+            pass
+        try:
+            rc = ffmpeg.wait(timeout=10)
+            logger.info(f'[FFMPEG] FFmpeg process terminated with exit code {rc}')
+            if rc != 0:
+                stderr_tail = _ffmpeg_stderr_buf.getvalue()[-2000:]
+                logger.error(f'[FFMPEG] Non-zero exit. Last stderr:\n{stderr_tail or "(empty)"}')
+        except subprocess.TimeoutExpired:
+            ffmpeg.kill()
+            logger.warning('[FFMPEG] FFmpeg did not exit in 10 s — killed')
         try:
             picam2.stop()
             logger.info('[CAMERA] PiCamera2 stopped')
