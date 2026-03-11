@@ -209,19 +209,21 @@ def stream_process(
         return None
 
     logger.debug(f'[GPIO] Searching for gpiochip with >{IRLED} lines…')
+    led_line = None
     try:
         chip = _find_gpio_chip(IRLED)
         if chip is None:
-            raise RuntimeError('No suitable gpiochip found in /dev/gpiochip0..9')
-        led_line = chip.get_line(IRLED)
-        led_line.request(
-            consumer="LED",
-            type=gpiod.LINE_REQ_DIR_OUT,
-            flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP
-        )
-        logger.debug(f'[GPIO] IR LED line {IRLED} acquired on {chip.name()}')
+            logger.warning('[GPIO] No suitable gpiochip found — IR LED disabled, stream continues')
+        else:
+            led_line = chip.get_line(IRLED)
+            led_line.request(
+                consumer="LED",
+                type=gpiod.LINE_REQ_DIR_OUT,
+                flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP
+            )
+            logger.info(f'[GPIO] IR LED line {IRLED} acquired on {chip.name()}')
     except Exception as e:
-        logger.error(f'[GPIO] Failed to set up IR LED: {e}')
+        logger.error(f'[GPIO] Failed to set up IR LED: {e} — stream continues without IR LED')
         logger.debug(traceback.format_exc())
         led_line = None
 
