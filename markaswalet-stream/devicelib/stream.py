@@ -101,22 +101,47 @@ class StreamingSwiftletCounter(SwiftletCounter):
 
 
 def _select_video_encoder() -> str:
+    """Return 'h264_v4l2m2m' only if the hardware encoder actually works,
+    otherwise fall back to 'libx264'."""
+
+    # Step 1: check the encoder is listed at all (fast, cheap)
     try:
         result = subprocess.run(
             ['ffmpeg', '-hide_banner', '-encoders'],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5
+            capture_output=True, text=True, check=False, timeout=5
         )
-        encoders_text = f"{result.stdout}\n{result.stderr}"
-        if 'h264_v4l2m2m' in encoders_text:
-            logger.info('[FFMPEG] Hardware encoder h264_v4l2m2m available')
-            return 'h264_v4l2m2m'
+        if 'h264_v4l2m2m' not in f"{result.stdout}\n{result.stderr}":
+            logger.info('[FFMPEG] h264_v4l2m2m not listed — using libx264')
+            return 'libx264'
     except Exception as e:
-        logger.warning(f'[FFMPEG] Could not query encoders: {e}')
-    logger.info('[FFMPEG] Falling back to software encoder libx264')
+        logger.warning(f'[FFMPEG] Could not query encoders: {e} — using libx264')
+        return 'libx264'
+
+    # Step 2: do a real 1-frame test encode to confirm the V4L2 device works
+    test_cmd = [
+        'ffmpeg', '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', f'color=black:size={IMSIZE[0]}x{IMSIZE[1]}:rate=1',
+        '-vframes', '1',
+        '-c:v', 'h264_v4l2m2m',
+        '-f', 'null', '-'
+    ]
+    try:
+        probe = subprocess.run(
+            test_cmd, capture_output=True, text=True, check=False, timeout=10
+        )
+        if probe.returncode == 0:
+            logger.info('[FFMPEG] h264_v4l2m2m probe OK — using hardware encoder')
+            return 'h264_v4l2m2m'
+        else:
+            logger.warning(
+                f'[FFMPEG] h264_v4l2m2m probe failed (rc={probe.returncode}): '
+                f'{probe.stderr.strip()[:300]} — falling back to libx264'
+            )
+    except Exception as e:
+        logger.warning(f'[FFMPEG] h264_v4l2m2m probe exception: {e} — falling back to libx264')
+
     return 'libx264'
+
 
 
 def stream_process(
