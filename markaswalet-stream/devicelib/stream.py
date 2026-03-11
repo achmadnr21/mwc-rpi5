@@ -20,7 +20,6 @@ from devicelib.device import Device
 import gpiod
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARN)
 
 # How often (seconds) the RPi polls the API for updated config
 CONFIG_POLL_INTERVAL = 60
@@ -377,9 +376,6 @@ def stream_process(
                     remote_config = _device_cfg.get_config()
                     if remote_config is not None:
                         swiftlet_counter.reload_config_from_dict(remote_config)
-                        logger.debug('[CONFIG_POLL] Config refreshed from API')
-                    else:
-                        logger.debug('[CONFIG_POLL] No remote config available')
                 except Exception as _e:
                     logger.error(f'[CONFIG_POLL] Error fetching config: {_e}')
                     logger.debug(traceback.format_exc())
@@ -398,8 +394,6 @@ def stream_process(
                             _last_reported_in  = current_in
                             _last_reported_out = current_out
                             logger.info(f'[BIRD_COUNT] Reported delta_in={delta_in} delta_out={delta_out} crossing={swiftlet_counter.crossing_count}')
-                        else:
-                            logger.debug(f'[BIRD_COUNT] Updated crossing={swiftlet_counter.crossing_count} (no delta)')
                     else:
                         logger.warning('[BIRD_COUNT] API report returned failure')
                 except Exception as _e:
