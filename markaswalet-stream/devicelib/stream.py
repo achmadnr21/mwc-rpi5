@@ -189,16 +189,37 @@ def stream_process(
     logger.info('[STREAM] PiCamera2 started — input source: PiCamera2')
 
     # Setup IR LED for night/day switching
-    logger.debug('[GPIO] Setting up IR LED on gpiochip4…')
+    # Auto-detect the correct gpiochip — different RPi revisions use different numbers
+    def _find_gpio_chip(required_lines: int) -> 'gpiod.Chip | None':
+        """Scan /dev/gpiochipN (0-9) and return the first chip that has
+        at least `required_lines` GPIO lines available."""
+        for idx in range(10):
+            chip_path = f'gpiochip{idx}'
+            dev_path  = f'/dev/{chip_path}'
+            if not os.path.exists(dev_path):
+                continue
+            try:
+                c = gpiod.Chip(chip_path)
+                if c.num_lines() > required_lines:
+                    logger.info(f'[GPIO] Using {chip_path} ({c.num_lines()} lines) for IR LED')
+                    return c
+                c.close()
+            except Exception as _e:
+                logger.debug(f'[GPIO] {chip_path} probe failed: {_e}')
+        return None
+
+    logger.debug(f'[GPIO] Searching for gpiochip with >{IRLED} lines…')
     try:
-        chip = gpiod.Chip('gpiochip4')
+        chip = _find_gpio_chip(IRLED)
+        if chip is None:
+            raise RuntimeError('No suitable gpiochip found in /dev/gpiochip0..9')
         led_line = chip.get_line(IRLED)
         led_line.request(
             consumer="LED",
             type=gpiod.LINE_REQ_DIR_OUT,
             flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP
         )
-        logger.debug(f'[GPIO] IR LED line {IRLED} acquired')
+        logger.debug(f'[GPIO] IR LED line {IRLED} acquired on {chip.name()}')
     except Exception as e:
         logger.error(f'[GPIO] Failed to set up IR LED: {e}')
         logger.debug(traceback.format_exc())
