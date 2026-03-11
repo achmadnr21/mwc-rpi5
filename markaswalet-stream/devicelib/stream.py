@@ -20,6 +20,7 @@ from devicelib.device import Device
 import gpiod
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARN)
 
 # How often (seconds) the RPi polls the API for updated config
 CONFIG_POLL_INTERVAL = 60
