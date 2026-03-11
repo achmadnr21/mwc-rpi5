@@ -236,8 +236,8 @@ def stream_process(
     def _drain_ffmpeg_stderr(proc: subprocess.Popen, buf: io.StringIO):
         """Background thread: drain FFmpeg stderr line-by-line and log each line."""
         try:
-            for line in proc.stderr:
-                line = line.strip()
+            for raw_line in proc.stderr:
+                line = raw_line.decode('utf-8', errors='replace').strip()
                 if line:
                     logger.warning(f'[FFMPEG STDERR] {line}')
                     buf.write(line + '\n')
@@ -248,8 +248,7 @@ def stream_process(
         ffmpeg = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,          # stderr lines as str
+            stderr=subprocess.PIPE,  # bytes; decoded in drain thread
             bufsize=0
         )
         logger.info(f'[FFMPEG] Process PID: {ffmpeg.pid}')
