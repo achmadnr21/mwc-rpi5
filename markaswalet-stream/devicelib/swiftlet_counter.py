@@ -3,9 +3,12 @@ import numpy as np
 import time
 import json
 import os
+import logging
 from pathlib import Path
 from collections import deque
 import math
+
+logger = logging.getLogger(__name__)
 
 class SwiftletCounter:
     def __init__(
@@ -649,11 +652,21 @@ class SwiftletCounter:
     
     def _load_config(self, config_path):
         """Load configuration from JSON file"""
+        abs_path = os.path.abspath(config_path)
+        logger.debug(f'[CONFIG] Loading config from: {abs_path}')
         try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
+            with open(abs_path, 'r') as f:
+                cfg = json.load(f)
+            logger.info(f'[CONFIG] Loaded {len(cfg)} settings from: {abs_path}')
+            return cfg
         except FileNotFoundError:
-            print(f"Config file {config_path} not found. Using default parameters.")
+            logger.warning(f'[CONFIG] Config file NOT FOUND: {abs_path} — using built-in defaults')
+            return {}
+        except json.JSONDecodeError as e:
+            logger.error(f'[CONFIG] JSON parse error in {abs_path}: {e} — using built-in defaults')
+            return {}
+        except Exception as e:
+            logger.error(f'[CONFIG] Unexpected error loading {abs_path}: {e}')
             return {}
     
     def _is_valid_bird_shape(self, area, width, height, hull_area, perimeter):

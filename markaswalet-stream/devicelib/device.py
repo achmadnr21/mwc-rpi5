@@ -3,6 +3,10 @@ import random
 import string
 import requests
 import os
+import logging
+import traceback
+
+logger = logging.getLogger(__name__)
 
 class Device:
     def __init__(self, API_URL='https://markaswalet-iot.techiro.co.id/api/camera/'):
@@ -69,7 +73,7 @@ class Device:
         return count > 0
     
     def get_data(self):
-        print('[GET DATA] Getting Data...')
+        logger.info('[GET DATA] Getting data from API…')
         conn = self.local_database_connection()
         cursor = conn.cursor()
         cursor.execute('''
@@ -93,7 +97,7 @@ class Device:
 
         #lakukan request ke API
         response = requests.get(self.API_URL+'get-device-data', params=params)
-        print(f'[GET DATA] API_Response: {response.status_code}')
+        logger.info(f'[GET DATA] API response: {response.status_code}')
 
         granted_stream_key = None
         if response.status_code == 200:
@@ -121,7 +125,7 @@ class Device:
         if self.is_check_local_data_exist():
             return self.get_data()
         
-        print('[REGIST] Registering Device...')
+        logger.info('[REGIST] Registering device…')
 
         name = "Techiro Device"
         location = "Unset"
@@ -133,13 +137,13 @@ class Device:
             'password': generated_password
         }
 
-        print(f'[REGIST] Data to Register: {data}')
+        logger.debug(f'[REGIST] Registration payload: {data}')
         response = requests.post(self.API_URL + 'regist', json=data)
 
 
         granted_stream_key = None
         if response.status_code == 201 or response.status_code == 200:
-            print('[REGIST] Device Registered')
+            logger.info('[REGIST] Device registered successfully')
             stream_key = response.json()['stream_key']
             d_id = response.json()['id']
 
@@ -153,7 +157,7 @@ class Device:
             granted_stream_key = stream_key
 
         else:
-            print(f'[REGIST] Device Not Registered {response.status_code}')
+            logger.error(f'[REGIST] Registration failed — HTTP {response.status_code}: {response.text[:200]}')
             granted_stream_key = None
 
         return response.status_code, granted_stream_key
@@ -175,7 +179,8 @@ class Device:
             if response.status_code == 200:
                 return response.json().get('config')
         except Exception as e:
-            print(f'[GET_CONFIG] Error: {e}')
+            logger.error(f'[GET_CONFIG] Error fetching config: {e}')
+            logger.debug(traceback.format_exc())
         return None
 
     def report_bird_count(self, count_in: int, count_out: int, crossing_count: int = 0) -> bool:
@@ -199,7 +204,8 @@ class Device:
             response = requests.post(self.API_URL + 'bird-count', json=data, timeout=10)
             return response.status_code == 201
         except Exception as e:
-            print(f'[BIRD_COUNT] Error: {e}')
+            logger.error(f'[BIRD_COUNT] Error reporting count: {e}')
+            logger.debug(traceback.format_exc())
         return False
 
     def get_today_count(self) -> dict:
@@ -227,7 +233,8 @@ class Device:
                     'crossing_count': int(data.get('crossing_count', 0)),
                 }
         except Exception as e:
-            print(f'[GET_TODAY_COUNT] Error: {e}')
+            logger.error(f'[GET_TODAY_COUNT] Error: {e}')
+            logger.debug(traceback.format_exc())
         return {'total_in': 0, 'total_out': 0, 'crossing_count': 0}
 
     def run_process(self):
