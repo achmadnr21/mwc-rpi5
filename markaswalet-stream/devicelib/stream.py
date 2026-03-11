@@ -21,6 +21,10 @@ import gpiod
 
 logger = logging.getLogger(__name__)
 
+# Suppress verbose picamera2 debug logging
+logging.getLogger('picamera2').setLevel(logging.WARNING)
+logging.getLogger('picamera2.picamera2').setLevel(logging.WARNING)
+
 # How often (seconds) the RPi polls the API for updated config
 CONFIG_POLL_INTERVAL = 60
 # How often (seconds) the RPi reports accumulated bird counts to the API
